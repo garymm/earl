@@ -77,7 +77,7 @@ def test_gymnax_loop(training: bool, num_off_policy_updates: int):
     loop = GymnaxLoop(training, env, env_params, agent, num_envs, next(key_gen))
     num_cycles = 2
     steps_per_cycle = 10
-    agent_state = agent.initial_state(networks, loop.example_batched_action(), next(key_gen))
+    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
     agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     assert agent_state
     assert agent_state.step.t == num_cycles * steps_per_cycle
@@ -95,19 +95,11 @@ def test_gymnax_loop(training: bool, num_off_policy_updates: int):
 
 
 def test_bad_args():
-    class _BadEnv(gymnax.environments.classic_control.CartPole):
-        def action_space(self, params=None):  # type: ignore
-            return gymnax.environments.spaces.Dict({"a": gymnax.environments.spaces.Discrete(2)})
-
-    bad_env = _BadEnv()
     num_envs = 2
     agent = UniformRandom(gymnax.environments.spaces.Discrete(2), 0)
-    with pytest.raises(ValueError, match="action space"):
-        GymnaxLoop(True, bad_env, bad_env.default_params, agent, num_envs, jax.random.PRNGKey(0))
-
     env, env_params = gymnax.make("CartPole-v1")
     loop = GymnaxLoop(True, env, env_params, agent, num_envs, jax.random.PRNGKey(0))
-    initial_state = agent.initial_state(None, loop.example_batched_action(), jax.random.PRNGKey(0))
+    initial_state = agent.initial_state(None, loop.example_batched_obs(), jax.random.PRNGKey(0))
     with pytest.raises(ValueError, match="num_cycles"):
         loop.run(initial_state, 0, 10)
     with pytest.raises(ValueError, match="steps_per_cycle"):
@@ -125,6 +117,6 @@ def test_bad_metric_key():
     loop = GymnaxLoop(True, env, env_params, agent, num_envs, next(key_gen))
     num_cycles = 1
     steps_per_cycle = 1
-    agent_state = agent.initial_state(networks, loop.example_batched_action(), next(key_gen))
+    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
     with pytest.raises(ConflictingMetricError):
         loop.run(agent_state, num_cycles, steps_per_cycle)

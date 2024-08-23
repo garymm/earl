@@ -111,18 +111,19 @@ class GymnaxLoop:
         """
         self._training = training
         self._env = env
-        sample_action = self._env.action_space(env_params).sample(key)
-        if not isinstance(sample_action, jnp.ndarray):
-            raise ValueError("non-array action space not supported (yet).")
-        self._example_action = jnp.zeros((num_envs,) + sample_action.shape, dtype=sample_action.dtype)
+        sample_key, key = jax.random.split(key)
+        sample_key = jax.random.split(sample_key, num_envs)
+        self._example_action = jax.vmap(self._env.action_space(env_params).sample)(sample_key)
+        self._example_obs = jax.vmap(self._env.observation_space(env_params).sample)(sample_key)
+
         self._env_reset = partial(self._env.reset, params=env_params)
         self._env_step = partial(self._env.step, params=env_params)
         self._agent = agent
         self._num_envs = num_envs
         self._key = key
 
-    def example_batched_action(self) -> jnp.ndarray:
-        return self._example_action
+    def example_batched_obs(self) -> jnp.ndarray:
+        return self._example_obs
 
     def run(
         self, agent_state: AgentState, num_cycles: int, steps_per_cycle: int, print_progress=True
