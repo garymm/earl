@@ -56,9 +56,16 @@ class EnvTimestep:
     all of the members will have an additional leading batch dimension.
     """
 
-    done: jnp.ndarray
+    """whether this is the first timestep in an episode.
+
+    Because our environments automatically reset, this is true in 2 cases:
+    1. The first timestep in an experiment (after an explicit env.reset()).
+    2. The last timestep of an episode (since the the environment automatically
+       resets and the observation is the first of the next episode).
+    """
+    new_episode: jnp.ndarray
     obs: PyTree
-    prev_action: jnp.ndarray
+    prev_action: jnp.ndarray  # the action taken in the previous timestep
     reward: jnp.ndarray
 
 

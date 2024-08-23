@@ -85,7 +85,7 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, StepState]):
                 state.step.chosen_action_log_probs, log_probs_for_actions * state.step.mask
             ),
             key=key,
-            mask=state.step.mask & ~env_timestep.done,
+            mask=state.step.mask & ~env_timestep.new_episode,
             rewards=set_batch(state.step.rewards, env_timestep.reward * state.step.mask),
             t=state.step.t + 1,
         )

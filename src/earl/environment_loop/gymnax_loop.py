@@ -223,7 +223,7 @@ class GymnaxLoop:
         obs, env_state = jax.vmap(self._env_reset)(env_keys)
 
         env_timestep = EnvTimestep(
-            done=jnp.zeros((self._num_envs,), dtype=jnp.bool),
+            new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
             obs=obs,
             prev_action=self._example_action,
             reward=jnp.zeros((self._num_envs,)),
@@ -285,7 +285,7 @@ class GymnaxLoop:
             episode_steps = inp.episode_steps + 1
 
             # Update episode statistics
-            completed_episodes = next_timestep.done
+            completed_episodes = next_timestep.new_episode
             episode_length_sum = inp.complete_episode_length_sum + jnp.sum(episode_steps * completed_episodes)
             episode_count = inp.complete_episode_count + jnp.sum(completed_episodes, dtype=jnp.uint32)
 
@@ -293,7 +293,7 @@ class GymnaxLoop:
             episode_steps = jnp.where(completed_episodes, jnp.zeros_like(episode_steps), episode_steps)
 
             total_reward = inp.total_reward + jnp.sum(next_timestep.reward)
-            total_dones = inp.total_dones + jnp.sum(next_timestep.done, dtype=jnp.uint32)
+            total_dones = inp.total_dones + jnp.sum(next_timestep.new_episode, dtype=jnp.uint32)
 
             return (
                 _StepCarry(
