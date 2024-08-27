@@ -27,10 +27,7 @@ class UniformRandom(Agent[None, None, StepState]):
     """Agent that selects actions uniformly at random."""
 
     def __init__(self, action_space: gymnax.environments.spaces.Space, num_off_policy_updates: int):
-        assert isinstance(
-            action_space, gymnax.environments.spaces.Discrete
-        ), "Only discrete action spaces are supported."
-        self._num_actions = action_space.n
+        self._action_space = action_space
         self._num_off_policy_updates = num_off_policy_updates
         self._prng_metric_key = "prng"
 
@@ -44,9 +41,8 @@ class UniformRandom(Agent[None, None, StepState]):
     def _select_action(self, state: AgentState, env_timestep: EnvTimestep, training: bool) -> ActionAndStepState:
         key, action_key = jax.random.split(state.step.key)
         num_envs = env_timestep.obs.shape[0]
-        actions = jax.random.randint(
-            action_key, (num_envs,), 0, self._num_actions, dtype=env_timestep.prev_action.dtype
-        )
+        actions = jax.vmap(self._action_space.sample)(jax.random.split(action_key, num_envs))
+        assert isinstance(actions, jnp.ndarray)
         return ActionAndStepState(actions, StepState(key, state.step.t + 1, state.step.update_count))
 
     def _partition_for_grad(self, nets: None) -> tuple[None, None]:
@@ -93,6 +89,13 @@ def test_gymnax_loop(training: bool, num_off_policy_updates: int):
     else:
         assert agent_state.step.update_count == 0
 
+    assert env.num_actions > 0
+    for i in range(env.num_actions):
+        num_actions_i = metrics[f"action_counts_{i}"]
+        assert len(num_actions_i) == num_cycles
+        # technically this could fail due to chance but it's very unlikely
+        assert sum(num_actions_i) > 0
+
 
 def test_bad_args():
     num_envs = 2
@@ -120,3 +123,18 @@ def test_bad_metric_key():
     agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
     with pytest.raises(ConflictingMetricError):
         loop.run(agent_state, num_cycles, steps_per_cycle)
+
+
+def test_continuous_action_space():
+    env, env_params = gymnax.make("Swimmer-misc")
+    networks = None
+    num_envs = 2
+    key_gen = keygen(jax.random.PRNGKey(0))
+    agent = UniformRandom(env.action_space(), 0)
+    loop = GymnaxLoop(False, env, env_params, agent, num_envs, next(key_gen))
+    num_cycles = 1
+    steps_per_cycle = 1
+    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
+    agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
+    for k in metrics:
+        assert not k.startswith("action_counts_")

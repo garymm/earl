@@ -31,5 +31,6 @@ def test_learns_cart_pole():
     # Due to auto-resets, the reward is always constant, but it's a survival task
     # so longer episodes are better.
     first_five_mean = np.mean(episode_length_arr[:5])
+    assert first_five_mean > 0
     last_five_mean = np.mean(episode_length_arr[-5:])
     assert last_five_mean > 1.5 * first_five_mean, (episode_length_arr[:5], episode_length_arr[-5:])

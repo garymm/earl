@@ -11,6 +11,7 @@ import jax_dataclasses as jdc
 import optax
 from gymnax import EnvState
 from gymnax.environments.environment import Environment as GymnaxEnvironment
+from gymnax.environments.spaces import Discrete
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
@@ -24,6 +25,7 @@ class MetricKey(enum.StrEnum):
     Note that agents can return additional metrics.
     """
 
+    ACTION_COUNTS = enum.auto()
     DURATION_SEC = enum.auto()
     LOSS = enum.auto()
     TOTAL_REWARD = enum.auto()
@@ -54,6 +56,7 @@ class _StepCarry:
     episode_steps: jnp.ndarray
     complete_episode_length_sum: Scalar
     complete_episode_count: Scalar
+    action_counts: jnp.ndarray
 
 
 @jdc.pytree_dataclass()
@@ -113,7 +116,8 @@ class GymnaxLoop:
         self._env = env
         sample_key, key = jax.random.split(key)
         sample_key = jax.random.split(sample_key, num_envs)
-        self._example_action = jax.vmap(self._env.action_space(env_params).sample)(sample_key)
+        self._action_space = self._env.action_space(env_params)
+        self._example_action = jax.vmap(self._action_space.sample)(sample_key)
         self._example_obs = jax.vmap(self._env.observation_space(env_params).sample)(sample_key)
 
         self._env_reset = partial(self._env.reset, params=env_params)
@@ -254,7 +258,13 @@ class GymnaxLoop:
             all_metrics[MetricKey.REWARD_MEAN_SMOOTH].append(float(reward_mean_smooth))
 
             for k, v in cycle_result.metrics.items():
-                all_metrics[k].append(float(v))
+                if k == MetricKey.ACTION_COUNTS:
+                    if not v.shape:  # not a discrete action space
+                        continue
+                    for i in range(v.shape[0]):
+                        all_metrics[f"action_counts_{i}"].append(int(v[i]))
+                else:
+                    all_metrics[k].append(float(v))
 
             # TODO: log metrics
             # self._logger.write(metrics)
@@ -276,6 +286,11 @@ class GymnaxLoop:
 
             select_action_out = self._agent.select_action(agent_state_for_step, inp.env_timestep, self._training)
             action = select_action_out.action
+            if isinstance(self._action_space, Discrete):
+                one_hot_actions = jax.nn.one_hot(action, self._env.num_actions, dtype=inp.action_counts.dtype)
+                action_counts = inp.action_counts + jnp.sum(one_hot_actions, axis=0)
+            else:
+                action_counts = inp.action_counts
             env_key, key = jax.random.split(inp.key)
             env_keys = jax.random.split(env_key, self._num_envs)
             obs, env_state, reward, done, info = jax.vmap(self._env_step)(env_keys, inp.env_state, action)
@@ -306,10 +321,15 @@ class GymnaxLoop:
                     episode_steps,
                     episode_length_sum,
                     episode_count,
+                    action_counts,
                 ),
                 None,
             )
 
+        if isinstance(self._action_space, Discrete):
+            action_counts = jnp.zeros(self._env.num_actions, dtype=jnp.uint32)
+        else:
+            action_counts = jnp.array(0, dtype=jnp.uint32)
         final_carry, _ = filter_scan(
             scan_body,
             init=_StepCarry(
@@ -322,6 +342,7 @@ class GymnaxLoop:
                 jnp.zeros(self._num_envs, dtype=jnp.uint32),
                 jnp.array(0, dtype=jnp.uint32),
                 jnp.array(0, dtype=jnp.uint32),
+                action_counts,
             ),
             xs=None,
             length=num_steps,
@@ -342,5 +363,6 @@ class GymnaxLoop:
         metrics[MetricKey.NUM_ENVS_THAT_DID_NOT_COMPLETE] = jnp.sum(final_carry.complete_episode_count == 0)
         metrics[MetricKey.TOTAL_DONES] = final_carry.total_dones
         metrics[MetricKey.TOTAL_REWARD] = final_carry.total_reward
+        metrics[MetricKey.ACTION_COUNTS] = final_carry.action_counts
 
         return _CycleResult(agent_state, final_carry.env_state, final_carry.env_timestep, final_carry.key, metrics)
