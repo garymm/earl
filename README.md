@@ -13,7 +13,6 @@ For other environments, Earl supports the [Gymnasium](https://gymnasium.farama.o
 
 - Add checkpointing, probably use [Orbax](https://orbax.readthedocs.io/en/latest/orbax_checkpoint_101.html)
 - Add support for data parallel training use [pmean](https://astralord.github.io/posts/exploring-parallel-strategies-with-jax/#data-parallelism)
-- Add logging
 - gymnasium loop:
   - Multi-threaded to overlap model forward, data copying, and envs step. Basically steal ideas from podracers Sebulba.
 - Add builders, based on [Acme](https://github.com/google-deepmind/acme/blob/master/acme/agents/jax/builders.py).

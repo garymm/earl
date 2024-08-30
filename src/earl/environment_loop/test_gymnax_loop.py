@@ -11,6 +11,7 @@ from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from research.earl.core import ActionAndStepState, Agent, EnvTimestep, Metrics
 from research.earl.core import AgentState as CoreAgentState
 from research.earl.environment_loop.gymnax_loop import ConflictingMetricError, GymnaxLoop, MetricKey
+from research.earl.logging import base
 from research.utils.prng_jax import keygen
 
 
@@ -123,6 +124,43 @@ def test_bad_metric_key():
     agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
     with pytest.raises(ConflictingMetricError):
         loop.run(agent_state, num_cycles, steps_per_cycle)
+
+
+class _AppendLogger(base.MetricLogger):
+    def __init__(self):
+        super().__init__()
+        self._metrics = []
+
+    def write(self, metrics: base.Metrics):
+        self._metrics.append(metrics)
+
+    def _close(self):
+        pass
+
+
+# setting default device speeds things up a little, but running without cuda enabled jaxlib is even faster
+@jax.default_device(jax.devices("cpu")[0])
+def test_logs():
+    env, env_params = gymnax.make("CartPole-v1")
+    networks = None
+    num_envs = 2
+    key_gen = keygen(jax.random.PRNGKey(0))
+    agent = UniformRandom(env.action_space(), 0)
+    logger = _AppendLogger()
+    loop = GymnaxLoop(False, env, env_params, agent, num_envs, next(key_gen), logger=logger)
+    num_cycles = 2
+    steps_per_cycle = 10
+    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
+    agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
+    assert metrics
+    for k in metrics:
+        returned_values = metrics[k]
+        logged_values = [m[k] for m in logger._metrics]
+        assert returned_values == logged_values
+    assert metrics[MetricKey.STEP_NUM] == list(
+        range(steps_per_cycle, num_cycles * steps_per_cycle + 1, steps_per_cycle)
+    )
+    logger.close()
 
 
 def test_continuous_action_space():

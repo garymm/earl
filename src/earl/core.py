@@ -1,8 +1,8 @@
 """Core types."""
 
 import abc
-from collections.abc import MutableMapping
-from typing import Generic, TypeVar
+from collections.abc import Mapping
+from typing import Generic, Protocol, TypeVar
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -13,11 +13,16 @@ _Networks = TypeVar("_Networks", bound=PyTree)
 _CycleState = TypeVar("_CycleState")
 _StepState = TypeVar("_StepState")
 
-# A collection of metrics, keyed by name.
-Metrics = MutableMapping[str, Scalar]
-# A collection of series of metrics, keyed by name.
-# Typically the value lists are consecutive values from training or evaluation cycles.
-MultiMetrics = MutableMapping[str, list[Scalar]]
+# Keyed by name.
+Metrics = Mapping[str, Scalar | float | int]
+
+
+class SupportsStr(Protocol):
+    def __str__(self) -> str: ...
+
+
+# A collection of configuration values, keyed by name. AKA hyperparameters.
+ConfigForLog = Mapping[str, SupportsStr]
 
 
 @pytree_dataclass

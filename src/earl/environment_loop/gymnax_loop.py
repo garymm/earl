@@ -1,6 +1,7 @@
 import collections
-import enum
 import time
+import typing
+from collections.abc import Mapping
 from functools import partial
 from typing import Any
 
@@ -15,27 +16,10 @@ from gymnax.environments.spaces import Discrete
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
-from research.earl.core import Agent, AgentState, EnvTimestep, Metrics, MultiMetrics
+from research.earl.core import Agent, AgentState, EnvTimestep
+from research.earl.logging.base import MetricLogger
+from research.earl.logging.metric_key import MetricKey
 from research.utils.eqx_filter import filter_scan  # TODO: remove deps on research
-
-
-class MetricKey(enum.StrEnum):
-    """Keys for the metrics that will be returned by GymnaxLoop.run().
-
-    Note that agents can return additional metrics.
-    """
-
-    ACTION_COUNTS = enum.auto()
-    DURATION_SEC = enum.auto()
-    LOSS = enum.auto()
-    TOTAL_REWARD = enum.auto()
-    TOTAL_DONES = enum.auto()
-    """Mean over num_envs."""
-    REWARD_MEAN_SMOOTH = enum.auto()
-    """Mean over num_envs."""
-    COMPLETE_EPISODE_LENGTH_MEAN = enum.auto()
-    NUM_ENVS_THAT_DID_NOT_COMPLETE = enum.auto()
-
 
 _ALL_METRIC_KEYS = {str(k) for k in MetricKey}
 
@@ -59,16 +43,19 @@ class _StepCarry:
     action_counts: jnp.ndarray
 
 
+_ArrayMetrics = dict[str, jnp.ndarray]
+
+
 @jdc.pytree_dataclass()
 class _CycleResult:
     agent_state: PyTree
     env_state: EnvState
     env_timestep: EnvTimestep
     key: PRNGKeyArray
-    metrics: Metrics
+    metrics: _ArrayMetrics
 
 
-def _raise_if_metric_conflicts(metrics: Metrics):
+def _raise_if_metric_conflicts(metrics: Mapping):
     conflicting_keys = [k for k in metrics if k in _ALL_METRIC_KEYS]
     if not conflicting_keys:
         return
@@ -98,6 +85,7 @@ class GymnaxLoop:
         agent: Agent,
         num_envs: int,
         key: PRNGKeyArray,
+        logger: MetricLogger | None = None,
     ):
         """Initializes the GymnaxLoop.
 
@@ -111,6 +99,7 @@ class GymnaxLoop:
               If zero and training is True, there will be 1 on-policy update per cycle.
             key: The PRNG key. Must not be shared with the agent state, as this will cause jax buffer donation
                 errors.
+            logger: The logger to write metrics to.
         """
         self._training = training
         self._env = env
@@ -125,13 +114,19 @@ class GymnaxLoop:
         self._agent = agent
         self._num_envs = num_envs
         self._key = key
+        self._logger = logger
 
     def example_batched_obs(self) -> jnp.ndarray:
         return self._example_obs
 
     def run(
-        self, agent_state: AgentState, num_cycles: int, steps_per_cycle: int, print_progress=True
-    ) -> tuple[AgentState, MultiMetrics]:
+        self,
+        agent_state: AgentState,
+        num_cycles: int,
+        steps_per_cycle: int,
+        print_progress=True,
+        step_num_metric_start: int = 0,
+    ) -> tuple[AgentState, dict[str, list[float | int]]]:
         """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
         Args:
@@ -140,6 +135,9 @@ class GymnaxLoop:
             num_cycles: The number of cycles to run.
             steps_per_cycle: The number of steps to run in each cycle.
             print_progress: Whether to print progress to std out.
+            step_num_metric_start: The value to start the step number metric at. This is useful
+                when calling this function multiple times. Typically should be incremented by
+                num_cycles * steps_per_cycle between calls.
 
         Returns:
             The final agent state and a dictionary of metrics.
@@ -164,19 +162,23 @@ class GymnaxLoop:
             cycle_result = self._run_cycle(agent_state, env_state, env_timestep, num_steps, key)
             loss, metrics = self._agent.loss(cycle_result.agent_state)
             _raise_if_metric_conflicts(metrics)
-            metrics[MetricKey.LOSS] = loss
-            metrics.update(cycle_result.metrics)
-            return loss, jdc.replace(cycle_result, metrics=metrics)
+            # inside jit, return values are guaranteed to be arrays
+            mutable_metrics: _ArrayMetrics = typing.cast(_ArrayMetrics, dict(metrics))
+            mutable_metrics[MetricKey.LOSS] = loss
+            mutable_metrics.update(cycle_result.metrics)
+            return loss, jdc.replace(cycle_result, metrics=mutable_metrics)
 
         @eqx.filter_grad(has_aux=True)
-        def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state) -> tuple[Scalar, Metrics]:
+        def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state) -> tuple[Scalar, _ArrayMetrics]:
             agent_state: AgentState = jdc.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
             loss, metrics = self._agent.loss(agent_state)
             _raise_if_metric_conflicts(metrics)
-            metrics[MetricKey.LOSS] = loss
-            return loss, metrics
+            # inside jit, return values are guaranteed to be arrays
+            mutable_metrics: _ArrayMetrics = typing.cast(_ArrayMetrics, dict(metrics))
+            mutable_metrics[MetricKey.LOSS] = loss
+            return loss, mutable_metrics
 
-        def _off_policy_update(agent_state: AgentState, _) -> tuple[AgentState, Metrics]:
+        def _off_policy_update(agent_state: AgentState, _) -> tuple[AgentState, _ArrayMetrics]:
             nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
             grad, metrics = _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, jdc.replace(agent_state, nets=None))
             agent_state = self._agent.update_from_grads(agent_state, grad)
@@ -233,10 +235,11 @@ class GymnaxLoop:
             reward=jnp.zeros((self._num_envs,)),
         )
 
+        logger = self._logger
         cycles_iter = range(num_cycles)
         if print_progress:
             cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
-        for _ in cycles_iter:
+        for cycle_num in cycles_iter:
             cycle_start = time.monotonic()
             cycle_result = _run_cycle_and_update(agent_state, env_state, env_timestep, self._key)
             agent_state, env_state, env_timestep, self._key = (
@@ -246,28 +249,41 @@ class GymnaxLoop:
                 cycle_result.key,
             )
 
-            all_metrics[MetricKey.DURATION_SEC].append(time.monotonic() - cycle_start)
+            # convert arrays to python types
+            py_metrics: dict[str, float | int] = {}
+            py_metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
             reward_mean = cycle_result.metrics[MetricKey.TOTAL_REWARD] / self._num_envs
             if MetricKey.REWARD_MEAN_SMOOTH not in all_metrics:
                 reward_mean_smooth = reward_mean
             else:
                 reward_mean_smooth = optax.incremental_update(
-                    reward_mean, all_metrics[MetricKey.REWARD_MEAN_SMOOTH][-1], 0.01
+                    jnp.array(reward_mean), all_metrics[MetricKey.REWARD_MEAN_SMOOTH][-1], 0.01
                 )
-                assert isinstance(reward_mean_smooth, jnp.ndarray)
-            all_metrics[MetricKey.REWARD_MEAN_SMOOTH].append(float(reward_mean_smooth))
+            assert isinstance(reward_mean_smooth, jnp.ndarray)
+            py_metrics[MetricKey.REWARD_MEAN_SMOOTH] = float(reward_mean_smooth)
+
+            py_metrics[MetricKey.STEP_NUM] = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
+
+            action_counts = cycle_result.metrics.pop(MetricKey.ACTION_COUNTS)
+            assert isinstance(action_counts, jnp.ndarray)
+            if action_counts.shape:  # will be empty tuple if not discrete action space
+                for i in range(action_counts.shape[0]):
+                    py_metrics[f"action_counts_{i}"] = int(action_counts[i])
 
             for k, v in cycle_result.metrics.items():
-                if k == MetricKey.ACTION_COUNTS:
-                    if not v.shape:  # not a discrete action space
-                        continue
-                    for i in range(v.shape[0]):
-                        all_metrics[f"action_counts_{i}"].append(int(v[i]))
+                assert v.shape == (), f"Expected scalar metric {k} to be scalar, got {v.shape}"
+                if jnp.isdtype(v.dtype, "integral"):
+                    v = int(v)
                 else:
-                    all_metrics[k].append(float(v))
+                    assert jnp.isdtype(v.dtype, "real floating")
+                    v = float(v)
+                py_metrics[k] = v
 
-            # TODO: log metrics
-            # self._logger.write(metrics)
+            for k, v in py_metrics.items():
+                all_metrics[k].append(v)
+
+            if logger:
+                logger.write(py_metrics)
 
         return agent_state, all_metrics
 
