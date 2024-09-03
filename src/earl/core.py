@@ -25,26 +25,31 @@ class SupportsStr(Protocol):
 ConfigForLog = Mapping[str, SupportsStr]
 
 
-@pytree_dataclass
-class AgentState(Generic[_Networks, _CycleState, _StepState]):
-    """The state of an agent.
+class AgentState(eqx.Module, Generic[_Networks, _CycleState, _StepState]):
+    nets: _Networks
+    cycle: _CycleState
+    step: _StepState
+    inference: bool = False
 
-    nets: neural networks. It must be a PyTree since it will
-        be passed to equinox.combine(). It is updated in update_from_grads() based on gradients.
-        Anything that needs to be optimized via gradient descent should be in nets.
 
-    cycle: contains anything other than _Networks that also needs to be updated in
-        once a cycle, i.e. by update_from_grads().
-        This is where optimizer state belongs. If the only thing that your agent updates on each cycle is the optimizer
-        state, you can set the _CycleState type var to optax.OptState.
+AgentState.__init__.__doc__ = """Args:
 
-    step: contains anything that needs to be updated on each step. Typically
-        random keys and RNN states go here.
-    """
+nets: neural networks. It must be a PyTree since it will
+    be passed to equinox.combine(). It is updated in update_from_grads() based on gradients.
+    Anything that needs to be optimized via gradient descent should be in nets.
+    Any objects that need to change their behavior in inference or training mode should
+    have a boolean member variable that is named "inference" for that purpose.
 
-    nets: _Networks  # updated one every cycle based on gradients
-    cycle: _CycleState  # updated on every cycle, arbitrarily
-    step: _StepState  # updated on every step
+cycle: contains anything other than _Networks that also needs to be updated in
+    once a cycle, i.e. by update_from_grads().
+    This is where optimizer state belongs. If the only thing that your agent updates on each cycle is the optimizer
+    state, you can set the _CycleState type var to optax.OptState.
+
+step: contains anything that needs to be updated on each step. Typically
+    random keys and RNN states go here.
+
+inference: True means inference mode, False means training.
+"""
 
 
 @pytree_dataclass
@@ -101,7 +106,7 @@ class Agent(abc.ABC, Generic[_Networks, _CycleState, _StepState]):
         )
 
         for step in range(steps_per_cycle):
-            action, state.step = a.select_action(state, env_timestep, training)
+            action, state.step = a.select_action(state, env_timestep)
             env_timestep = env.step(action)
         return a.loss(state)
 
@@ -120,7 +125,7 @@ class Agent(abc.ABC, Generic[_Networks, _CycleState, _StepState]):
     def run_cycle(state, env_timestep):
 
         for step in range(steps_per_cycle):
-            action, state.step = a.select_action(state, env_timestep, training)
+            action, state.step = a.select_action(state, env_timestep)
             env_timestep = env.step(action)
         return state
 
@@ -168,7 +173,7 @@ class Agent(abc.ABC, Generic[_Networks, _CycleState, _StepState]):
         """
 
     def select_action(
-        self, state: AgentState[_Networks, _CycleState, _StepState], env_timestep: EnvTimestep, training: bool
+        self, state: AgentState[_Networks, _CycleState, _StepState], env_timestep: EnvTimestep
     ) -> ActionAndStepState[_StepState]:
         """Selects a batch of actions and updates step state.
 
@@ -178,7 +183,6 @@ class Agent(abc.ABC, Generic[_Networks, _CycleState, _StepState]):
             state: The current agent state. Donated, so callers should not access it after calling.
             env_timestep: The current environment timestep. All fields are batched, so any vmap() should be done inside
                 this method.
-            training: Whether the agent is training or not. I.e. false means inference only.
 
         Returns:
             ActionAndStepState which contains the batch of actions and the updated step state.
@@ -186,14 +190,14 @@ class Agent(abc.ABC, Generic[_Networks, _CycleState, _StepState]):
 
         @eqx.filter_jit(donate="all-except-first")
         # swap order of args so we can avoid donating env_timestep
-        def select_action_jit(env_timestep, state, training):
-            return self._select_action(state, env_timestep, training)
+        def select_action_jit(env_timestep, state):
+            return self._select_action(state, env_timestep)
 
-        return select_action_jit(env_timestep, state, training)
+        return select_action_jit(env_timestep, state)
 
     @abc.abstractmethod
     def _select_action(
-        self, state: AgentState[_Networks, _CycleState, _StepState], env_timestep: EnvTimestep, training: bool
+        self, state: AgentState[_Networks, _CycleState, _StepState], env_timestep: EnvTimestep
     ) -> ActionAndStepState[_StepState]:
         """Selects a batch of actions and updates step state.
 

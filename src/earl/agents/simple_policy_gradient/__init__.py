@@ -68,7 +68,7 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, StepState]):
             ),
         )
 
-    def _select_action(self, state: AgentState, env_timestep: EnvTimestep, training: bool) -> ActionAndStepState:
+    def _select_action(self, state: AgentState, env_timestep: EnvTimestep) -> ActionAndStepState:
         logits = jax.vmap(state.nets)(env_timestep.obs)
         actions_key, key = jax.random.split(state.step.key)
         actions = jax.vmap(jax.random.categorical, in_axes=(None, 0))(actions_key, logits)

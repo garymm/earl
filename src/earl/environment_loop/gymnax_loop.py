@@ -64,6 +64,28 @@ def _raise_if_metric_conflicts(metrics: Mapping):
     )
 
 
+def _pytree_leaf_means(pytree: PyTree, prefix: str) -> dict[str, jax.Array]:
+    """Returns a dict with key = path to the array in pytree, val = mean of array."""
+
+    def traverse(obj, current_path=""):
+        if isinstance(obj, jax.Array):
+            return {f"{prefix}/{current_path}": jnp.mean(obj)}
+
+        if isinstance(obj, tuple | list):
+            return {k: v for i, item in enumerate(obj) for k, v in traverse(item, f"{current_path}[{i}]").items()}
+
+        if hasattr(obj, "__dict__"):
+            return {
+                k: v
+                for attr, value in obj.__dict__.items()
+                for k, v in traverse(value, f"{current_path}.{attr}" if current_path else attr).items()
+            }
+
+        return {}
+
+    return traverse(pytree)
+
+
 class GymnaxLoop:
     """Runs an Agent in a Gymnax environment.
 
@@ -79,18 +101,18 @@ class GymnaxLoop:
 
     def __init__(
         self,
-        training: bool,
         env: GymnaxEnvironment,
         env_params: Any,
         agent: Agent,
         num_envs: int,
         key: PRNGKeyArray,
         logger: MetricLogger | None = None,
+        inference: bool = False,
+        assert_no_recompile: bool = True,
     ):
         """Initializes the GymnaxLoop.
 
         Args:
-            training: Whether the agent should be trained. Iff true, agent.update_for_cycle() will be called.
             env: The environment.
             env_params: The environment's parameters.
             agent: The agent.
@@ -100,21 +122,26 @@ class GymnaxLoop:
             key: The PRNG key. Must not be shared with the agent state, as this will cause jax buffer donation
                 errors.
             logger: The logger to write metrics to.
+            inference: If False, agent.update_for_cycle() will not be called.
+            assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         """
-        self._training = training
         self._env = env
         sample_key, key = jax.random.split(key)
         sample_key = jax.random.split(sample_key, num_envs)
         self._action_space = self._env.action_space(env_params)
         self._example_action = jax.vmap(self._action_space.sample)(sample_key)
         self._example_obs = jax.vmap(self._env.observation_space(env_params).sample)(sample_key)
-
         self._env_reset = partial(self._env.reset, params=env_params)
         self._env_step = partial(self._env.step, params=env_params)
         self._agent = agent
         self._num_envs = num_envs
         self._key = key
         self._logger = logger
+        self._inference = inference
+        _run_cycle_and_update = partial(self._run_cycle_and_update)
+        if assert_no_recompile:
+            _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=1)
+        self._run_cycle_and_update = eqx.filter_jit(_run_cycle_and_update, donate="warn")
 
     def example_batched_obs(self) -> jnp.ndarray:
         return self._example_obs
@@ -132,6 +159,9 @@ class GymnaxLoop:
         Args:
             agent_state: The initial agent state. Donated, meaning callers should not access it
                 after calling this function. They can instead use the returned agent state.
+                Will be replaced with `equinox.nn.inference_mode(agent_state, value=inference)`
+                before running, where `inference` is the value that was passed into
+                GymnaxLoop.__init__().
             num_cycles: The number of cycles to run.
             steps_per_cycle: The number of steps to run in each cycle.
             print_progress: Whether to print progress to std out.
@@ -148,6 +178,88 @@ class GymnaxLoop:
         if steps_per_cycle <= 0:
             raise ValueError("steps_per_cycle must be positive.")
 
+        agent_state = eqx.nn.inference_mode(agent_state, value=self._inference)
+
+        all_metrics = collections.defaultdict(list)
+
+        env_key, self._key = jax.random.split(self._key, 2)
+        env_keys = jax.random.split(env_key, self._num_envs)
+        obs, env_state = jax.vmap(self._env_reset)(env_keys)
+
+        env_timestep = EnvTimestep(
+            new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
+            obs=obs,
+            prev_action=jnp.zeros_like(self._example_action),
+            reward=jnp.zeros((self._num_envs,)),
+        )
+
+        logger = self._logger
+        cycles_iter = range(num_cycles)
+        if print_progress:
+            cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
+
+        for cycle_num in cycles_iter:
+            cycle_start = time.monotonic()
+            # We saw some environments inconsistently returning weak_type, which triggers recompilation
+            # when the previous cycle's output is passed back in to _run_cycle, so strip all weak_type.
+            # The astype looks like a no-op but it strips the weak_type.
+            env_timestep = jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_timestep)
+            env_state = jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_state)
+
+            cycle_result = self._run_cycle_and_update(agent_state, env_state, env_timestep, self._key, steps_per_cycle)
+            agent_state, env_state, env_timestep, self._key = (
+                cycle_result.agent_state,
+                cycle_result.env_state,
+                cycle_result.env_timestep,
+                cycle_result.key,
+            )
+
+            # convert arrays to python types
+            py_metrics: dict[str, float | int] = {}
+            py_metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
+            reward_mean = cycle_result.metrics[MetricKey.TOTAL_REWARD] / self._num_envs
+            if MetricKey.REWARD_MEAN_SMOOTH not in all_metrics:
+                reward_mean_smooth = reward_mean
+            else:
+                reward_mean_smooth = optax.incremental_update(
+                    jnp.array(reward_mean), all_metrics[MetricKey.REWARD_MEAN_SMOOTH][-1], 0.01
+                )
+            assert isinstance(reward_mean_smooth, jnp.ndarray)
+            py_metrics[MetricKey.REWARD_MEAN_SMOOTH] = float(reward_mean_smooth)
+
+            py_metrics[MetricKey.STEP_NUM] = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
+
+            action_counts = cycle_result.metrics.pop(MetricKey.ACTION_COUNTS)
+            assert isinstance(action_counts, jnp.ndarray)
+            if action_counts.shape:  # will be empty tuple if not discrete action space
+                for i in range(action_counts.shape[0]):
+                    py_metrics[f"action_counts/{i}"] = int(action_counts[i])
+
+            for k, v in cycle_result.metrics.items():
+                assert v.shape == (), f"Expected scalar metric {k} to be scalar, got {v.shape}"
+                if jnp.isdtype(v.dtype, "integral"):
+                    v = int(v)
+                else:
+                    assert jnp.isdtype(v.dtype, "real floating")
+                    v = float(v)
+                py_metrics[k] = v
+
+            for k, v in py_metrics.items():
+                all_metrics[k].append(v)
+
+            if logger:
+                logger.write(py_metrics)
+
+        return agent_state, all_metrics
+
+    def _run_cycle_and_update(
+        self,
+        agent_state: AgentState,
+        env_state: EnvState,
+        env_timestep: EnvTimestep,
+        key: PRNGKeyArray,
+        steps_per_cycle: int,
+    ) -> _CycleResult:
         @eqx.filter_grad(has_aux=True)
         def _run_cycle_and_loss_grad(
             nets_yes_grad: PyTree,
@@ -181,111 +293,43 @@ class GymnaxLoop:
         def _off_policy_update(agent_state: AgentState, _) -> tuple[AgentState, _ArrayMetrics]:
             nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
             grad, metrics = _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, jdc.replace(agent_state, nets=None))
+            grad_means = _pytree_leaf_means(grad, "grad_mean")
+            metrics.update(grad_means)
             agent_state = self._agent.update_from_grads(agent_state, grad)
             return agent_state, metrics
 
-        @eqx.filter_jit(donate="warn")
-        def _run_cycle_and_update(
-            agent_state: AgentState, env_state: EnvState, env_timestep: EnvTimestep, key: PRNGKeyArray
-        ) -> _CycleResult:
-            if self._training and not self._agent.num_off_policy_updates_per_cycle():
-                # On-policy update. Calculate the gradient through the entire cycle.
-                nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
-                nets_grad, cycle_result = _run_cycle_and_loss_grad(
-                    nets_yes_grad,
-                    nets_no_grad,
-                    jdc.replace(agent_state, nets=None),
-                    env_state,
-                    env_timestep,
-                    steps_per_cycle,
-                    key,
-                )
-                agent_state = self._agent.update_from_grads(cycle_result.agent_state, nets_grad)
-            else:
-                cycle_result = self._run_cycle(agent_state, env_state, env_timestep, steps_per_cycle, key)
-                agent_state = cycle_result.agent_state
-
-            metrics = cycle_result.metrics
-
-            if self._training and self._agent.num_off_policy_updates_per_cycle():
-                agent_state, off_policy_metrics = filter_scan(
-                    _off_policy_update,
-                    init=agent_state,
-                    xs=None,
-                    length=self._agent.num_off_policy_updates_per_cycle(),
-                )
-                # Take mean of each metric.
-                # This is potentially misleading, but not sure what else to do.
-                metrics.update({k: jnp.mean(v) for k, v in off_policy_metrics.items()})
-
-            return _CycleResult(
-                agent_state, cycle_result.env_state, cycle_result.env_timestep, cycle_result.key, metrics
+        if not self._inference and not self._agent.num_off_policy_updates_per_cycle():
+            # On-policy update. Calculate the gradient through the entire cycle.
+            nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
+            nets_grad, cycle_result = _run_cycle_and_loss_grad(
+                nets_yes_grad,
+                nets_no_grad,
+                jdc.replace(agent_state, nets=None),
+                env_state,
+                env_timestep,
+                steps_per_cycle,
+                key,
             )
+            grad_means = _pytree_leaf_means(nets_grad, "grad_mean")
+            cycle_result.metrics.update(grad_means)
+            agent_state = self._agent.update_from_grads(cycle_result.agent_state, nets_grad)
+        else:
+            cycle_result = self._run_cycle(agent_state, env_state, env_timestep, steps_per_cycle, key)
+            agent_state = cycle_result.agent_state
 
-        all_metrics = collections.defaultdict(list)
-
-        env_key, self._key = jax.random.split(self._key, 2)
-        env_keys = jax.random.split(env_key, self._num_envs)
-        obs, env_state = jax.vmap(self._env_reset)(env_keys)
-
-        env_timestep = EnvTimestep(
-            new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
-            obs=obs,
-            prev_action=self._example_action,
-            reward=jnp.zeros((self._num_envs,)),
-        )
-
-        logger = self._logger
-        cycles_iter = range(num_cycles)
-        if print_progress:
-            cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
-        for cycle_num in cycles_iter:
-            cycle_start = time.monotonic()
-            cycle_result = _run_cycle_and_update(agent_state, env_state, env_timestep, self._key)
-            agent_state, env_state, env_timestep, self._key = (
-                cycle_result.agent_state,
-                cycle_result.env_state,
-                cycle_result.env_timestep,
-                cycle_result.key,
+        metrics = cycle_result.metrics
+        if not self._inference and self._agent.num_off_policy_updates_per_cycle():
+            agent_state, off_policy_metrics = filter_scan(
+                _off_policy_update,
+                init=agent_state,
+                xs=None,
+                length=self._agent.num_off_policy_updates_per_cycle(),
             )
+            # Take mean of each metric.
+            # This is potentially misleading, but not sure what else to do.
+            metrics.update({k: jnp.mean(v) for k, v in off_policy_metrics.items()})
 
-            # convert arrays to python types
-            py_metrics: dict[str, float | int] = {}
-            py_metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
-            reward_mean = cycle_result.metrics[MetricKey.TOTAL_REWARD] / self._num_envs
-            if MetricKey.REWARD_MEAN_SMOOTH not in all_metrics:
-                reward_mean_smooth = reward_mean
-            else:
-                reward_mean_smooth = optax.incremental_update(
-                    jnp.array(reward_mean), all_metrics[MetricKey.REWARD_MEAN_SMOOTH][-1], 0.01
-                )
-            assert isinstance(reward_mean_smooth, jnp.ndarray)
-            py_metrics[MetricKey.REWARD_MEAN_SMOOTH] = float(reward_mean_smooth)
-
-            py_metrics[MetricKey.STEP_NUM] = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
-
-            action_counts = cycle_result.metrics.pop(MetricKey.ACTION_COUNTS)
-            assert isinstance(action_counts, jnp.ndarray)
-            if action_counts.shape:  # will be empty tuple if not discrete action space
-                for i in range(action_counts.shape[0]):
-                    py_metrics[f"action_counts_{i}"] = int(action_counts[i])
-
-            for k, v in cycle_result.metrics.items():
-                assert v.shape == (), f"Expected scalar metric {k} to be scalar, got {v.shape}"
-                if jnp.isdtype(v.dtype, "integral"):
-                    v = int(v)
-                else:
-                    assert jnp.isdtype(v.dtype, "real floating")
-                    v = float(v)
-                py_metrics[k] = v
-
-            for k, v in py_metrics.items():
-                all_metrics[k].append(v)
-
-            if logger:
-                logger.write(py_metrics)
-
-        return agent_state, all_metrics
+        return _CycleResult(agent_state, cycle_result.env_state, cycle_result.env_timestep, cycle_result.key, metrics)
 
     def _run_cycle(
         self,
@@ -300,7 +344,7 @@ class GymnaxLoop:
         def scan_body(inp: _StepCarry, _) -> tuple[_StepCarry, None]:
             agent_state_for_step = jdc.replace(agent_state, step=inp.agent_step_state)
 
-            select_action_out = self._agent.select_action(agent_state_for_step, inp.env_timestep, self._training)
+            select_action_out = self._agent.select_action(agent_state_for_step, inp.env_timestep)
             action = select_action_out.action
             if isinstance(self._action_space, Discrete):
                 one_hot_actions = jax.nn.one_hot(action, self._env.num_actions, dtype=inp.action_counts.dtype)
@@ -310,7 +354,6 @@ class GymnaxLoop:
             env_key, key = jax.random.split(inp.key)
             env_keys = jax.random.split(env_key, self._num_envs)
             obs, env_state, reward, done, info = jax.vmap(self._env_step)(env_keys, inp.env_state, action)
-
             next_timestep = EnvTimestep(done, obs, action, reward)
 
             episode_steps = inp.episode_steps + 1

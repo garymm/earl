@@ -22,7 +22,7 @@ def test_learns_cart_pole():
     nets_key, loop_key, agent_key = jax.random.split(jax.random.PRNGKey(0), 3)
 
     networks = simple_policy_gradient.make_networks([input_shape, 32, env.num_actions], nets_key)
-    loop = GymnaxLoop(True, env, env.default_params, agent, num_envs, loop_key)
+    loop = GymnaxLoop(env, env.default_params, agent, num_envs, loop_key)
     agent_state = agent.initial_state(networks, loop.example_batched_obs(), agent_key)
     agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     assert agent_state
