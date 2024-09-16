@@ -281,3 +281,11 @@ class Agent(abc.ABC, Generic[_Networks, _CycleState, _StepState]):
         - grads = jax.grad(multiple calls to self.select_action(state), one call to self.loss(state))()
         - state = self.update_from_grads(state, grads)
         """
+
+
+class ObserveTrajectory(Protocol):
+    def __call__(self, env_timesteps: EnvTimestep, step_num: int) -> None: ...
+
+    """env_timesteps is a trajectory of env timesteps, and step_num is the
+    number of steps taken prior to the trajectory
+    """

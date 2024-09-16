@@ -179,3 +179,22 @@ def test_continuous_action_space():
     agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     for k in metrics:
         assert not k.startswith("action_counts_")
+
+
+def test_observe_trajectory():
+    env, env_params = gymnax.make("Swimmer-misc")
+    networks = None
+    num_envs = 2
+    key_gen = keygen(jax.random.PRNGKey(0))
+    agent = UniformRandom(env.action_space(), 0)
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), inference=True)
+    num_cycles = 2
+    steps_per_cycle = 3
+    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
+
+    def observe_trajectory(
+        env_timesteps: EnvTimestep, step_num: int
+    ):  # Crude check that we are getting the correct trajectory
+        assert env_timesteps.obs.shape[0] == steps_per_cycle
+
+    agent_state, _ = loop.run(agent_state, num_cycles, steps_per_cycle, observe_trajectory=observe_trajectory)
