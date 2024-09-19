@@ -12,7 +12,7 @@ from research.earl.core import ActionAndStepState, Agent, EnvTimestep, Metrics
 from research.earl.core import AgentState as CoreAgentState
 from research.earl.environment_loop.gymnax_loop import ConflictingMetricError, GymnaxLoop, MetricKey
 from research.earl.logging import base
-from research.utils.prng_jax import keygen
+from research.utils.prng import keygen
 
 
 class StepState(NamedTuple):
