@@ -54,6 +54,7 @@ class _CycleResult:
     key: PRNGKeyArray
     metrics: _ArrayMetrics
     trajectory: EnvTimestep | None = None
+    step_infos: dict[Any, Any] | None = None
 
 
 def _raise_if_metric_conflicts(metrics: Mapping):
@@ -206,7 +207,7 @@ class GymnaxLoop:
 
         if observe_trajectory is None:
 
-            def noop(env_timesteps: EnvTimestep, step_num: int):
+            def noop(env_timesteps: EnvTimestep, step_infos: dict[Any, Any], step_num: int):
                 return None
 
             observe_trajectory = noop  # So that I don't need to add an assertion in the inner loop for pyright
@@ -223,8 +224,14 @@ class GymnaxLoop:
                 agent_state, env_state, env_timestep, self._key, steps_per_cycle, keep_observations
             )
 
-            if cycle_result.trajectory is not None:  # Need this condition to appease pyright
-                observe_trajectory(cycle_result.trajectory, step_num_metric_start + cycle_num * steps_per_cycle)
+            if (
+                cycle_result.trajectory is not None and cycle_result.step_infos is not None
+            ):  # Need this condition to appease pyright
+                observe_trajectory(
+                    cycle_result.trajectory,
+                    cycle_result.step_infos,
+                    step_num_metric_start + cycle_num * steps_per_cycle,
+                )
 
             agent_state, env_state, env_timestep, self._key = (
                 cycle_result.agent_state,
@@ -358,6 +365,7 @@ class GymnaxLoop:
             cycle_result.key,
             metrics,
             cycle_result.trajectory,
+            cycle_result.step_infos,
         )
 
     def _run_cycle(
@@ -371,7 +379,7 @@ class GymnaxLoop:
     ) -> _CycleResult:
         """Runs self._agent and self._env for num_steps."""
 
-        def scan_body(inp: _StepCarry, _) -> tuple[_StepCarry, EnvTimestep | None]:
+        def scan_body(inp: _StepCarry, _) -> tuple[_StepCarry, tuple[EnvTimestep, dict[Any, Any]] | None]:
             agent_state_for_step = jdc.replace(agent_state, step=inp.agent_step_state)
 
             select_action_out = self._agent.select_action(agent_state_for_step, inp.env_timestep)
@@ -412,7 +420,7 @@ class GymnaxLoop:
                     episode_count,
                     action_counts,
                 ),
-                inp.env_timestep if keep_observations else None,
+                (inp.env_timestep, info) if keep_observations else None,
             )
 
         if isinstance(self._action_space, Discrete):
@@ -420,7 +428,7 @@ class GymnaxLoop:
         else:
             action_counts = jnp.array(0, dtype=jnp.uint32)
 
-        final_carry, trajectory = filter_scan(
+        final_carry, trajectory_and_info = filter_scan(
             scan_body,
             init=_StepCarry(
                 env_timestep,
@@ -455,6 +463,15 @@ class GymnaxLoop:
         metrics[MetricKey.TOTAL_REWARD] = final_carry.total_reward
         metrics[MetricKey.ACTION_COUNTS] = final_carry.action_counts
 
+        trajectory = step_infos = None
+        if keep_observations:
+            trajectory, step_infos = trajectory_and_info
         return _CycleResult(
-            agent_state, final_carry.env_state, final_carry.env_timestep, final_carry.key, metrics, trajectory
+            agent_state,
+            final_carry.env_state,
+            final_carry.env_timestep,
+            final_carry.key,
+            metrics,
+            trajectory,
+            step_infos,
         )

@@ -2,7 +2,7 @@
 
 import abc
 from collections.abc import Mapping
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -284,8 +284,10 @@ class Agent(abc.ABC, Generic[_Networks, _CycleState, _StepState]):
 
 
 class ObserveTrajectory(Protocol):
-    def __call__(self, env_timesteps: EnvTimestep, step_num: int) -> None: ...
+    def __call__(self, env_timesteps: EnvTimestep, step_infos: dict[Any, Any], step_num: int) -> None: ...
 
-    """env_timesteps is a trajectory of env timesteps, and step_num is the
-    number of steps taken prior to the trajectory
+    """
+    env_timesteps is a trajectory of env timesteps
+    step_infos is the aggregated info returned from environment.step()
+    step_num is the number of steps taken prior to the trajectory
     """

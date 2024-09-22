@@ -1,4 +1,4 @@
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import gymnax
 import gymnax.environments.spaces
@@ -192,9 +192,16 @@ def test_observe_trajectory():
     steps_per_cycle = 3
     agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
 
+    ran_at_least_once = False
+
     def observe_trajectory(
-        env_timesteps: EnvTimestep, step_num: int
+        env_timesteps: EnvTimestep, step_infos: dict[str, Any], step_num: int
     ):  # Crude check that we are getting the correct trajectory
         assert env_timesteps.obs.shape[0] == steps_per_cycle
+        assert "discount" in step_infos
+
+        nonlocal ran_at_least_once
+        ran_at_least_once = True
 
     agent_state, _ = loop.run(agent_state, num_cycles, steps_per_cycle, observe_trajectory=observe_trajectory)
+    assert ran_at_least_once  # To ensure that the observe_trajectory function is called
