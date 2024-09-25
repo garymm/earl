@@ -465,6 +465,7 @@ class GymnaxLoop:
 
         trajectory = step_infos = None
         if keep_observations:
+            assert isinstance(trajectory_and_info, tuple)
             trajectory, step_infos = trajectory_and_info
         return _CycleResult(
             agent_state,
