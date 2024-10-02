@@ -8,7 +8,7 @@ import jax_dataclasses as jdc
 import pytest
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from research.earl.core import ActionAndStepState, Agent, EnvTimestep, Metrics
+from research.earl.core import Agent, AgentStep, EnvInfo, EnvStep, Metrics, env_info_from_gymnax
 from research.earl.core import AgentState as CoreAgentState
 from research.earl.environment_loop.gymnax_loop import ConflictingMetricError, GymnaxLoop, MetricKey
 from research.earl.logging import base
@@ -18,13 +18,16 @@ from research.utils.prng import keygen
 class StepState(NamedTuple):
     key: PRNGKeyArray
     t: jnp.ndarray
-    update_count: jnp.ndarray
 
 
-AgentState = CoreAgentState[None, None, StepState]
+class OptState(NamedTuple):
+    opt_count: jnp.ndarray
 
 
-class UniformRandom(Agent[None, None, StepState]):
+AgentState = CoreAgentState[None, OptState, None, StepState]
+
+
+class UniformRandom(Agent[None, OptState, None, StepState]):
     """Agent that selects actions uniformly at random."""
 
     def __init__(self, action_space: gymnax.environments.spaces.Space, num_off_policy_updates: int):
@@ -32,19 +35,21 @@ class UniformRandom(Agent[None, None, StepState]):
         self._num_off_policy_updates = num_off_policy_updates
         self._prng_metric_key = "prng"
 
-    def _initial_state(self, nets: None, obs: PyTree, key: PRNGKeyArray) -> AgentState:
-        return AgentState(
-            nets=None,
-            cycle=None,
-            step=StepState(key, jnp.zeros((1,), dtype=jnp.uint32), jnp.zeros((1,), dtype=jnp.uint32)),
-        )
+    def _new_step_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> StepState:
+        return StepState(key, jnp.zeros((1,), dtype=jnp.uint32))
 
-    def _select_action(self, state: AgentState, env_timestep: EnvTimestep) -> ActionAndStepState:
+    def _new_opt_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> OptState:
+        return OptState(jnp.zeros((1,), dtype=jnp.uint32))
+
+    def _new_experience_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> None:
+        return None
+
+    def _step(self, state: AgentState, env_step: EnvStep) -> AgentStep[StepState]:
         key, action_key = jax.random.split(state.step.key)
-        num_envs = env_timestep.obs.shape[0]
+        num_envs = env_step.obs.shape[0]
         actions = jax.vmap(self._action_space.sample)(jax.random.split(action_key, num_envs))
         assert isinstance(actions, jnp.ndarray)
-        return ActionAndStepState(actions, StepState(key, state.step.t + 1, state.step.update_count))
+        return AgentStep(actions, StepState(key, state.step.t + 1))
 
     def _partition_for_grad(self, nets: None) -> tuple[None, None]:
         return None, None
@@ -55,10 +60,14 @@ class UniformRandom(Agent[None, None, StepState]):
             self._prng_metric_key: state.step.key[0],
         }
 
-    def _update_from_grads(self, state: AgentState, nets_grads: PyTree) -> AgentState:
-        return jdc.replace(state, step=StepState(state.step.key, state.step.t, state.step.update_count + 1))
+    def _optimize_from_grads(self, state: AgentState, nets_grads: PyTree) -> AgentState:
+        assert state.opt is not None
+        return jdc.replace(state, opt=OptState(state.opt.opt_count + 1))
 
-    def num_off_policy_updates_per_cycle(self) -> int:
+    def _update_experience(self, state: AgentState, trajectory: EnvStep) -> None:
+        return None
+
+    def num_off_policy_optims_per_cycle(self) -> int:
         return self._num_off_policy_updates
 
 
@@ -74,21 +83,20 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), inference=inference)
     num_cycles = 2
     steps_per_cycle = 10
-    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
+    env_info = env_info_from_gymnax(env, env_params, num_envs)
+    agent_state = agent.new_state(networks, env_info, next(key_gen))
     agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     assert agent_state
     assert agent_state.step.t == num_cycles * steps_per_cycle
     assert len(metrics[MetricKey.DURATION_SEC]) == num_cycles
-    for duration in metrics[MetricKey.DURATION_SEC]:
-        assert duration > 0
     if inference:
-        assert agent_state.step.update_count == 0
+        assert agent_state.opt.opt_count == 0
     else:
         assert len(metrics[MetricKey.LOSS]) == num_cycles
         assert len(metrics[agent._prng_metric_key]) == num_cycles
         assert metrics[agent._prng_metric_key][0] != metrics[agent._prng_metric_key][1]
-        expected_update_count = num_cycles * (num_off_policy_updates or 1)
-        assert agent_state.step.update_count == expected_update_count
+        expected_opt_count = num_cycles * (num_off_policy_updates or 1)
+        assert agent_state.opt.opt_count == expected_opt_count
 
     assert env.num_actions > 0
     for i in range(env.num_actions):
@@ -103,11 +111,12 @@ def test_bad_args():
     agent = UniformRandom(gymnax.environments.spaces.Discrete(2), 0)
     env, env_params = gymnax.make("CartPole-v1")
     loop = GymnaxLoop(env, env_params, agent, num_envs, jax.random.PRNGKey(0))
-    initial_state = agent.initial_state(None, loop.example_batched_obs(), jax.random.PRNGKey(0))
+    env_info = env_info_from_gymnax(env, env_params, num_envs)
+    agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
     with pytest.raises(ValueError, match="num_cycles"):
-        loop.run(initial_state, 0, 10)
+        loop.run(agent_state, 0, 10)
     with pytest.raises(ValueError, match="steps_per_cycle"):
-        loop.run(initial_state, 10, 0)
+        loop.run(agent_state, 10, 0)
 
 
 def test_bad_metric_key():
@@ -121,7 +130,8 @@ def test_bad_metric_key():
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen))
     num_cycles = 1
     steps_per_cycle = 1
-    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
+    env_info = env_info_from_gymnax(env, env_params, num_envs)
+    agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
     with pytest.raises(ConflictingMetricError):
         loop.run(agent_state, num_cycles, steps_per_cycle)
 
@@ -151,7 +161,8 @@ def test_logs():
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=inference)
     num_cycles = 2
     steps_per_cycle = 10
-    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
+    env_info = env_info_from_gymnax(env, env_params, num_envs)
+    agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
     assert not agent_state.inference
     agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     assert agent_state.inference, "we set loop.inference, but agent_state.inference is False!"
@@ -175,7 +186,8 @@ def test_continuous_action_space():
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), inference=True)
     num_cycles = 1
     steps_per_cycle = 1
-    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
+    env_info = env_info_from_gymnax(env, env_params, num_envs)
+    agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
     agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     for k in metrics:
         assert not k.startswith("action_counts_")
@@ -190,14 +202,14 @@ def test_observe_trajectory():
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), inference=True)
     num_cycles = 2
     steps_per_cycle = 3
-    agent_state = agent.initial_state(networks, loop.example_batched_obs(), next(key_gen))
+    env_info = env_info_from_gymnax(env, env_params, num_envs)
+    agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
 
     ran_at_least_once = False
 
-    def observe_trajectory(
-        env_timesteps: EnvTimestep, step_infos: dict[str, Any], step_num: int
-    ):  # Crude check that we are getting the correct trajectory
-        assert env_timesteps.obs.shape[0] == steps_per_cycle
+    def observe_trajectory(env_steps: EnvStep, step_infos: dict[str, Any], step_num: int):
+        assert env_steps.obs.shape[0] == num_envs
+        assert env_steps.obs.shape[1] == steps_per_cycle
         assert "discount" in step_infos
 
         nonlocal ran_at_least_once

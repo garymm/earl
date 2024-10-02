@@ -5,6 +5,7 @@ import pytest
 from gymnax.environments import CartPole
 
 from research.earl.agents import simple_policy_gradient
+from research.earl.core import env_info_from_gymnax
 from research.earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
 
 
@@ -23,7 +24,8 @@ def test_learns_cart_pole():
 
     networks = simple_policy_gradient.make_networks([input_shape, 32, env.num_actions], nets_key)
     loop = GymnaxLoop(env, env.default_params, agent, num_envs, loop_key)
-    agent_state = agent.initial_state(networks, loop.example_batched_obs(), agent_key)
+    env_info = env_info_from_gymnax(env, env.default_params, num_envs)
+    agent_state = agent.new_state(networks, env_info, agent_key)
     agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     assert agent_state
     assert len(metrics[MetricKey.COMPLETE_EPISODE_LENGTH_MEAN]) == num_cycles

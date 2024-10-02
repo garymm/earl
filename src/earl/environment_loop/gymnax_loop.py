@@ -1,9 +1,10 @@
 import collections
+import dataclasses
 import time
 import typing
 from collections.abc import Mapping
 from functools import partial
-from typing import Any
+from typing import Any, Generic
 
 import equinox as eqx
 import jax
@@ -16,7 +17,16 @@ from gymnax.environments.spaces import Discrete
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
-from research.earl.core import Agent, AgentState, EnvTimestep, ObserveTrajectory
+from research.earl.core import (
+    Agent,
+    AgentState,
+    EnvStep,
+    ObserveTrajectory,
+    _ExperienceState,
+    _Networks,
+    _OptState,
+    _StepState,
+)
 from research.earl.logging.base import MetricLogger
 from research.earl.logging.metric_key import MetricKey
 from research.utils.eqx_filter import filter_scan  # TODO: remove deps on research
@@ -29,10 +39,10 @@ class ConflictingMetricError(Exception):
 
 
 @jdc.pytree_dataclass()
-class _StepCarry:
-    env_timestep: EnvTimestep
+class _StepCarry(Generic[_StepState]):
+    env_step: EnvStep
     env_state: EnvState
-    agent_step_state: Any
+    step_state: _StepState
     key: PRNGKeyArray
     total_reward: Scalar
     total_dones: Scalar
@@ -50,11 +60,11 @@ _ArrayMetrics = dict[str, jnp.ndarray]
 class _CycleResult:
     agent_state: PyTree
     env_state: EnvState
-    env_timestep: EnvTimestep
+    env_step: EnvStep
     key: PRNGKeyArray
     metrics: _ArrayMetrics
-    trajectory: EnvTimestep | None = None
-    step_infos: dict[Any, Any] | None = None
+    trajectory: EnvStep
+    step_infos: dict[Any, Any]
 
 
 def _raise_if_metric_conflicts(metrics: Mapping):
@@ -132,7 +142,6 @@ class GymnaxLoop:
         sample_key = jax.random.split(sample_key, num_envs)
         self._action_space = self._env.action_space(env_params)
         self._example_action = jax.vmap(self._action_space.sample)(sample_key)
-        self._example_obs = jax.vmap(self._env.observation_space(env_params).sample)(sample_key)
         self._env_reset = partial(self._env.reset, params=env_params)
         self._env_step = partial(self._env.step, params=env_params)
         self._agent = agent
@@ -145,18 +154,15 @@ class GymnaxLoop:
             _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=1)
         self._run_cycle_and_update = eqx.filter_jit(_run_cycle_and_update, donate="warn")
 
-    def example_batched_obs(self) -> jnp.ndarray:
-        return self._example_obs
-
     def run(
         self,
-        agent_state: AgentState,
+        agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
         num_cycles: int,
         steps_per_cycle: int,
         print_progress=True,
         step_num_metric_start: int = 0,
         observe_trajectory: ObserveTrajectory | None = None,
-    ) -> tuple[AgentState, dict[str, list[float | int]]]:
+    ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], dict[str, list[float | int]]]:
         """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
         Args:
@@ -191,7 +197,7 @@ class GymnaxLoop:
         env_keys = jax.random.split(env_key, self._num_envs)
         obs, env_state = jax.vmap(self._env_reset)(env_keys)
 
-        env_timestep = EnvTimestep(
+        env_step = EnvStep(
             new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
             obs=obs,
             prev_action=jnp.zeros_like(self._example_action),
@@ -203,11 +209,9 @@ class GymnaxLoop:
         if print_progress:
             cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
 
-        keep_observations = observe_trajectory is not None
-
         if observe_trajectory is None:
 
-            def noop(env_timesteps: EnvTimestep, step_infos: dict[Any, Any], step_num: int):
+            def noop(env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int):
                 return None
 
             observe_trajectory = noop  # So that I don't need to add an assertion in the inner loop for pyright
@@ -217,26 +221,21 @@ class GymnaxLoop:
             # We saw some environments inconsistently returning weak_type, which triggers recompilation
             # when the previous cycle's output is passed back in to _run_cycle, so strip all weak_type.
             # The astype looks like a no-op but it strips the weak_type.
-            env_timestep = jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_timestep)
+            env_step = jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_step)
             env_state = jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_state)
 
-            cycle_result = self._run_cycle_and_update(
-                agent_state, env_state, env_timestep, self._key, steps_per_cycle, keep_observations
+            cycle_result = self._run_cycle_and_update(agent_state, env_state, env_step, self._key, steps_per_cycle)
+
+            observe_trajectory(
+                cycle_result.trajectory,
+                cycle_result.step_infos,
+                step_num_metric_start + cycle_num * steps_per_cycle,
             )
 
-            if (
-                cycle_result.trajectory is not None and cycle_result.step_infos is not None
-            ):  # Need this condition to appease pyright
-                observe_trajectory(
-                    cycle_result.trajectory,
-                    cycle_result.step_infos,
-                    step_num_metric_start + cycle_num * steps_per_cycle,
-                )
-
-            agent_state, env_state, env_timestep, self._key = (
+            agent_state, env_state, env_step, self._key = (
                 cycle_result.agent_state,
                 cycle_result.env_state,
-                cycle_result.env_timestep,
+                cycle_result.env_step,
                 cycle_result.key,
             )
 
@@ -280,36 +279,37 @@ class GymnaxLoop:
 
     def _run_cycle_and_update(
         self,
-        agent_state: AgentState,
+        agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
         env_state: EnvState,
-        env_timestep: EnvTimestep,
+        env_step: EnvStep,
         key: PRNGKeyArray,
         steps_per_cycle: int,
-        keep_observations: bool,
     ) -> _CycleResult:
         @eqx.filter_grad(has_aux=True)
         def _run_cycle_and_loss_grad(
             nets_yes_grad: PyTree,
             nets_no_grad: PyTree,
-            other_agent_state: AgentState,
+            other_agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
             env_state: EnvState,
-            env_timestep: EnvTimestep,
+            env_step: EnvStep,
             num_steps: int,
             key: PRNGKeyArray,
         ) -> tuple[Scalar, _CycleResult]:
-            agent_state: AgentState = jdc.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
-            cycle_result = self._run_cycle(agent_state, env_state, env_timestep, num_steps, key, keep_observations)
-            loss, metrics = self._agent.loss(cycle_result.agent_state)
+            agent_state = dataclasses.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
+            cycle_result = self._run_cycle(agent_state, env_state, env_step, num_steps, key)
+            experience_state = self._agent.update_experience(cycle_result.agent_state, cycle_result.trajectory)
+            agent_state = dataclasses.replace(cycle_result.agent_state, experience=experience_state)
+            loss, metrics = self._agent.loss(agent_state)
             _raise_if_metric_conflicts(metrics)
             # inside jit, return values are guaranteed to be arrays
             mutable_metrics: _ArrayMetrics = typing.cast(_ArrayMetrics, dict(metrics))
             mutable_metrics[MetricKey.LOSS] = loss
             mutable_metrics.update(cycle_result.metrics)
-            return loss, jdc.replace(cycle_result, metrics=mutable_metrics)
+            return loss, jdc.replace(cycle_result, metrics=mutable_metrics, agent_state=agent_state)
 
         @eqx.filter_grad(has_aux=True)
         def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state) -> tuple[Scalar, _ArrayMetrics]:
-            agent_state: AgentState = jdc.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
+            agent_state = dataclasses.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
             loss, metrics = self._agent.loss(agent_state)
             _raise_if_metric_conflicts(metrics)
             # inside jit, return values are guaranteed to be arrays
@@ -317,42 +317,45 @@ class GymnaxLoop:
             mutable_metrics[MetricKey.LOSS] = loss
             return loss, mutable_metrics
 
-        def _off_policy_update(agent_state: AgentState, _) -> tuple[AgentState, _ArrayMetrics]:
+        def _off_policy_update(
+            agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
+        ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], _ArrayMetrics]:
             nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
             grad, metrics = _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, jdc.replace(agent_state, nets=None))
             grad_means = _pytree_leaf_means(grad, "grad_mean")
             metrics.update(grad_means)
-            agent_state = self._agent.update_from_grads(agent_state, grad)
+            agent_state = self._agent.optimize_from_grads(agent_state, grad)
             return agent_state, metrics
 
-        if not self._inference and not self._agent.num_off_policy_updates_per_cycle():
+        if not self._inference and not self._agent.num_off_policy_optims_per_cycle():
             # On-policy update. Calculate the gradient through the entire cycle.
             nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
             nets_grad, cycle_result = _run_cycle_and_loss_grad(
                 nets_yes_grad,
                 nets_no_grad,
-                jdc.replace(agent_state, nets=None),
+                dataclasses.replace(agent_state, nets=None),
                 env_state,
-                env_timestep,
+                env_step,
                 steps_per_cycle,
                 key,
             )
             grad_means = _pytree_leaf_means(nets_grad, "grad_mean")
             cycle_result.metrics.update(grad_means)
-            agent_state = self._agent.update_from_grads(cycle_result.agent_state, nets_grad)
+            agent_state = self._agent.optimize_from_grads(cycle_result.agent_state, nets_grad)
         else:
-            cycle_result = self._run_cycle(
-                agent_state, env_state, env_timestep, steps_per_cycle, key, keep_observations
-            )
+            cycle_result = self._run_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
             agent_state = cycle_result.agent_state
+            if not self._inference:
+                experience_state = self._agent.update_experience(cycle_result.agent_state, cycle_result.trajectory)
+                agent_state = dataclasses.replace(agent_state, experience=experience_state)
 
         metrics = cycle_result.metrics
-        if not self._inference and self._agent.num_off_policy_updates_per_cycle():
+        if not self._inference and self._agent.num_off_policy_optims_per_cycle():
             agent_state, off_policy_metrics = filter_scan(
                 _off_policy_update,
                 init=agent_state,
                 xs=None,
-                length=self._agent.num_off_policy_updates_per_cycle(),
+                length=self._agent.num_off_policy_optims_per_cycle(),
             )
             # Take mean of each metric.
             # This is potentially misleading, but not sure what else to do.
@@ -361,7 +364,7 @@ class GymnaxLoop:
         return _CycleResult(
             agent_state,
             cycle_result.env_state,
-            cycle_result.env_timestep,
+            cycle_result.env_step,
             cycle_result.key,
             metrics,
             cycle_result.trajectory,
@@ -370,20 +373,19 @@ class GymnaxLoop:
 
     def _run_cycle(
         self,
-        agent_state: AgentState,
+        agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
         env_state: EnvState,
-        env_timestep: EnvTimestep,
+        env_step: EnvStep,
         num_steps: int,
         key: PRNGKeyArray,
-        keep_observations: bool,
     ) -> _CycleResult:
         """Runs self._agent and self._env for num_steps."""
 
-        def scan_body(inp: _StepCarry, _) -> tuple[_StepCarry, tuple[EnvTimestep, dict[Any, Any]] | None]:
-            agent_state_for_step = jdc.replace(agent_state, step=inp.agent_step_state)
+        def scan_body(inp: _StepCarry[_StepState], _) -> tuple[_StepCarry[_StepState], tuple[EnvStep, dict[Any, Any]]]:
+            agent_state_for_step = jdc.replace(agent_state, step=inp.step_state)
 
-            select_action_out = self._agent.select_action(agent_state_for_step, inp.env_timestep)
-            action = select_action_out.action
+            agent_step = self._agent.step(agent_state_for_step, inp.env_step)
+            action = agent_step.action
             if isinstance(self._action_space, Discrete):
                 one_hot_actions = jax.nn.one_hot(action, self._env.num_actions, dtype=inp.action_counts.dtype)
                 action_counts = inp.action_counts + jnp.sum(one_hot_actions, axis=0)
@@ -392,7 +394,7 @@ class GymnaxLoop:
             env_key, key = jax.random.split(inp.key)
             env_keys = jax.random.split(env_key, self._num_envs)
             obs, env_state, reward, done, info = jax.vmap(self._env_step)(env_keys, inp.env_state, action)
-            next_timestep = EnvTimestep(done, obs, action, reward)
+            next_timestep = EnvStep(done, obs, action, reward)
 
             episode_steps = inp.episode_steps + 1
 
@@ -411,7 +413,7 @@ class GymnaxLoop:
                 _StepCarry(
                     next_timestep,
                     env_state,
-                    select_action_out.step_state,
+                    agent_step.state,
                     key,
                     total_reward,
                     total_dones,
@@ -420,7 +422,9 @@ class GymnaxLoop:
                     episode_count,
                     action_counts,
                 ),
-                (inp.env_timestep, info) if keep_observations else None,
+                # NOTE: the very last env step in the last cycle is never returned in a trajectory.
+                # I can't think of a clean way to do it, and losing a single step is unlikely to matter.
+                (inp.env_step, info),
             )
 
         if isinstance(self._action_space, Discrete):
@@ -428,10 +432,10 @@ class GymnaxLoop:
         else:
             action_counts = jnp.array(0, dtype=jnp.uint32)
 
-        final_carry, trajectory_and_info = filter_scan(
+        final_carry, (trajectory, step_infos) = filter_scan(
             scan_body,
             init=_StepCarry(
-                env_timestep,
+                env_step,
                 env_state,
                 agent_state.step,
                 key,
@@ -446,7 +450,7 @@ class GymnaxLoop:
             length=num_steps,
         )
 
-        agent_state = jdc.replace(agent_state, step=final_carry.agent_step_state)
+        agent_state = dataclasses.replace(agent_state, step=final_carry.step_state)
         # mean across complete episodes
         complete_episode_length_mean = jnp.where(
             final_carry.complete_episode_count > 0,
@@ -463,14 +467,19 @@ class GymnaxLoop:
         metrics[MetricKey.TOTAL_REWARD] = final_carry.total_reward
         metrics[MetricKey.ACTION_COUNTS] = final_carry.action_counts
 
-        trajectory = step_infos = None
-        if keep_observations:
-            assert isinstance(trajectory_and_info, tuple)
-            trajectory, step_infos = trajectory_and_info
+        # Somewhat arbitrary, but flashbax expects (num_envs, num_steps, ...)
+        # so we make it easier on users by transposing here.
+        def to_num_envs_first(x):
+            if isinstance(x, jnp.ndarray) and x.ndim > 1:
+                return jnp.transpose(x, (1, 0, *range(2, x.ndim)))
+            return x
+
+        trajectory = jax.tree.map(to_num_envs_first, trajectory)
+
         return _CycleResult(
             agent_state,
             final_carry.env_state,
-            final_carry.env_timestep,
+            final_carry.env_step,
             final_carry.key,
             metrics,
             trajectory,
