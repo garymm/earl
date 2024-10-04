@@ -1,7 +1,6 @@
 import jax
 import numpy as np
 import optax
-import pytest
 from gymnax.environments import CartPole
 
 from research.earl.agents import simple_policy_gradient
@@ -9,7 +8,6 @@ from research.earl.core import env_info_from_gymnax
 from research.earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
 
 
-@pytest.mark.slow
 def test_learns_cart_pole():
     env = CartPole()
     num_envs = 500
