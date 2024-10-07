@@ -205,15 +205,13 @@ def test_observe_trajectory():
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
 
-    ran_at_least_once = False
-
     def observe_trajectory(env_steps: EnvStep, step_infos: dict[str, Any], step_num: int):
         assert env_steps.obs.shape[0] == num_envs
         assert env_steps.obs.shape[1] == steps_per_cycle
         assert "discount" in step_infos
 
-        nonlocal ran_at_least_once
-        ran_at_least_once = True
+        return {"ran": True}
 
-    agent_state, _ = loop.run(agent_state, num_cycles, steps_per_cycle, observe_trajectory=observe_trajectory)
-    assert ran_at_least_once  # To ensure that the observe_trajectory function is called
+    agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle, observe_trajectory=observe_trajectory)
+    for v in metrics["ran"]:
+        assert v

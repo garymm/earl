@@ -212,7 +212,7 @@ class GymnaxLoop:
         if observe_trajectory is None:
 
             def noop(env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int):
-                return None
+                return {}
 
             observe_trajectory = noop  # So that I don't need to add an assertion in the inner loop for pyright
 
@@ -226,11 +226,14 @@ class GymnaxLoop:
 
             cycle_result = self._run_cycle_and_update(agent_state, env_state, env_step, self._key, steps_per_cycle)
 
-            observe_trajectory(
+            trajectory_metrics = observe_trajectory(
                 cycle_result.trajectory,
                 cycle_result.step_infos,
                 step_num_metric_start + cycle_num * steps_per_cycle,
             )
+            # Could potentially be very slow if there are lots
+            # of metrics to compare
+            _raise_if_metric_conflicts(trajectory_metrics)
 
             agent_state, env_state, env_step, self._key = (
                 cycle_result.agent_state,
@@ -262,11 +265,11 @@ class GymnaxLoop:
 
             for k, v in cycle_result.metrics.items():
                 assert v.shape == (), f"Expected scalar metric {k} to be scalar, got {v.shape}"
-                if jnp.isdtype(v.dtype, "integral"):
-                    v = int(v)
-                else:
-                    assert jnp.isdtype(v.dtype, "real floating")
-                    v = float(v)
+                py_metrics[k] = v.item()
+
+            for k, v in trajectory_metrics.items():
+                if isinstance(v, jnp.ndarray):
+                    v = v.item()
                 py_metrics[k] = v
 
             for k, v in py_metrics.items():

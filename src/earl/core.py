@@ -409,7 +409,7 @@ class Agent(abc.ABC, Generic[_Networks, _OptState, _ExperienceState, _StepState]
 
 
 class ObserveTrajectory(Protocol):
-    def __call__(self, env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int) -> None: ...
+    def __call__(self, env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int) -> Metrics: ...
 
     """Args:
         env_steps: a trajectory of env timesteps where the shape of each field is
