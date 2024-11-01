@@ -110,6 +110,34 @@ def _pytree_leaf_means(pytree: PyTree, prefix: str) -> dict[str, jax.Array]:
     return traverse(pytree)
 
 
+@dataclasses.dataclass(frozen=True)
+class State(Generic[_Networks, _OptState, _ExperienceState, _StepState]):
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]
+    env_state: EnvState | None = None
+    env_step: EnvStep | None = None
+    step_num: int = 0
+
+
+State.__init__.__doc__ = """Initializes the State.
+
+Args:
+    agent_state: The agent state.
+    env_state: The environment state. If None, the environment will be reset.
+    env_step: The environment step. If None, the environment will be reset.
+    step_num: The step number to start the metric logging at.
+"""
+
+
+@dataclasses.dataclass(frozen=True)
+class Result(State[_Networks, _OptState, _ExperienceState, _StepState]):
+    """A State but with all fields guaranteed to be not None."""
+
+    # Note: defaults are just to please the type checker, since the base class has defaults.
+    # We should not actually use the defaults.
+    env_state: EnvState = EnvState(0)
+    env_step: EnvStep = EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0))
+
+
 class GymnaxLoop:
     """Runs an Agent in a Gymnax environment.
 
@@ -168,19 +196,21 @@ class GymnaxLoop:
 
     def run(
         self,
-        agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+        state: State[_Networks, _OptState, _ExperienceState, _StepState]
+        | AgentState[_Networks, _OptState, _ExperienceState, _StepState],
         num_cycles: int,
         steps_per_cycle: int,
         print_progress=True,
-        step_num_metric_start: int = 0,
         observe_trajectory: ObserveTrajectory | None = None,
-    ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], dict[str, list[float | int]]]:
+    ) -> tuple[Result[_Networks, _OptState, _ExperienceState, _StepState], dict[str, list[float | int]]]:
         """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
         Args:
-            agent_state: The initial agent state. Donated, meaning callers should not access it
-                after calling this function. They can instead use the returned agent state.
-                Will be replaced with `equinox.nn.inference_mode(agent_state, value=inference)`
+            state: The initial state. Donated, meaning callers should not access it
+                after calling this function. They can instead use the returned state.
+                Callers can pass in an AgentState, which is equivalent to passing in a LoopState
+                with the same agent_state and all other fields set to their default values.
+                state.agent_state will be replaced with `equinox.nn.inference_mode(agent_state, value=inference)`
                 before running, where `inference` is the value that was passed into
                 GymnaxLoop.__init__().
             num_cycles: The number of cycles to run.
@@ -193,7 +223,7 @@ class GymnaxLoop:
                 length steps_per_cycle and runs any custom logic on it.
 
         Returns:
-            The final agent state and a dictionary of metrics.
+            The final loop state and a dictionary of metrics.
             Each metric is a list of length num_cycles. All returned metrics are per-cycle.
         """
         if num_cycles <= 0:
@@ -201,20 +231,32 @@ class GymnaxLoop:
         if steps_per_cycle <= 0:
             raise ValueError("steps_per_cycle must be positive.")
 
-        agent_state = eqx.nn.inference_mode(agent_state, value=self._inference)
+        if isinstance(state, AgentState):
+            state = State(state)
+
+        agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference)
 
         all_metrics = collections.defaultdict(list)
 
-        env_key, self._key = jax.random.split(self._key, 2)
-        env_keys = jax.random.split(env_key, self._num_envs)
-        obs, env_state = jax.vmap(self._env_reset)(env_keys)
+        if state.env_state is None:
+            assert state.env_step is None
+            env_key, self._key = jax.random.split(self._key, 2)
+            env_keys = jax.random.split(env_key, self._num_envs)
+            obs, env_state = jax.vmap(self._env_reset)(env_keys)
 
-        env_step = EnvStep(
-            new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
-            obs=obs,
-            prev_action=jnp.zeros_like(self._example_action),
-            reward=jnp.zeros((self._num_envs,)),
-        )
+            env_step = EnvStep(
+                new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
+                obs=obs,
+                prev_action=jnp.zeros_like(self._example_action),
+                reward=jnp.zeros((self._num_envs,)),
+            )
+        else:
+            env_state = state.env_state
+            assert state.env_step is not None
+            env_step = state.env_step
+
+        step_num_metric_start = state.step_num
+        del state
 
         logger = self._logger
         cycles_iter = range(num_cycles)
@@ -234,8 +276,9 @@ class GymnaxLoop:
             # when the previous cycle's output is passed back in to _run_cycle, so strip all weak_type.
             # The astype looks like a no-op but it strips the weak_type.
             env_step = jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_step)
-            env_state = jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_state)
-
+            env_state = typing.cast(
+                EnvState, jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_state)
+            )
             cycle_result = self._run_cycle_and_update(agent_state, env_state, env_step, self._key, steps_per_cycle)
 
             trajectory_metrics = observe_trajectory(
@@ -292,7 +335,8 @@ class GymnaxLoop:
             if logger:
                 logger.write(py_metrics)
 
-        return agent_state, all_metrics
+        result = Result(agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle)
+        return result, all_metrics
 
     def _run_cycle_and_update(
         self,

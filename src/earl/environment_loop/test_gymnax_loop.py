@@ -1,4 +1,5 @@
 from typing import Any, NamedTuple
+from unittest import mock
 
 import gymnax
 import gymnax.environments.spaces
@@ -10,7 +11,7 @@ from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
 from research.earl.core import Agent, AgentStep, EnvInfo, EnvStep, Metrics, env_info_from_gymnax
 from research.earl.core import AgentState as CoreAgentState
-from research.earl.environment_loop.gymnax_loop import ConflictingMetricError, GymnaxLoop, MetricKey
+from research.earl.environment_loop.gymnax_loop import ConflictingMetricError, GymnaxLoop, MetricKey, State
 from research.earl.logging import base
 from research.utils.prng import keygen
 
@@ -48,7 +49,7 @@ class UniformRandom(Agent[None, OptState, None, StepState]):
         key, action_key = jax.random.split(state.step.key)
         num_envs = env_step.obs.shape[0]
         actions = jax.vmap(self._action_space.sample)(jax.random.split(action_key, num_envs))
-        assert isinstance(actions, jnp.ndarray)
+        assert isinstance(actions, jax.Array)
         return AgentStep(actions, StepState(key, state.step.t + 1))
 
     def _partition_for_grad(self, nets: None) -> tuple[None, None]:
@@ -85,18 +86,18 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
     steps_per_cycle = 10
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, next(key_gen))
-    agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
-    assert agent_state
-    assert agent_state.step.t == num_cycles * steps_per_cycle
+    result, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
+    del agent_state
+    assert result.agent_state.step.t == num_cycles * steps_per_cycle
     assert len(metrics[MetricKey.DURATION_SEC]) == num_cycles
     if inference:
-        assert agent_state.opt.opt_count == 0
+        assert result.agent_state.opt.opt_count == 0
     else:
         assert len(metrics[MetricKey.LOSS]) == num_cycles
         assert len(metrics[agent._prng_metric_key]) == num_cycles
         assert metrics[agent._prng_metric_key][0] != metrics[agent._prng_metric_key][1]
         expected_opt_count = num_cycles * (num_off_policy_updates or 1)
-        assert agent_state.opt.opt_count == expected_opt_count
+        assert result.agent_state.opt.opt_count == expected_opt_count
 
     assert env.num_actions > 0
     for i in range(env.num_actions):
@@ -104,6 +105,35 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
         assert len(num_actions_i) == num_cycles
         # technically this could fail due to chance but it's very unlikely
         assert sum(num_actions_i) > 0
+
+
+def test_run_with_state():
+    env, env_params = gymnax.make("CartPole-v1")
+    num_envs = 2
+    obs, env_state = jax.vmap(env.reset)(jax.random.split(jax.random.PRNGKey(0), num_envs))
+    key_gen = keygen(jax.random.PRNGKey(0))
+    agent = UniformRandom(env.action_space(), 1)
+    env.reset = mock.Mock(spec=env.reset)
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen))
+    agent_state = agent.new_state(None, env_info_from_gymnax(env, env_params, num_envs), jax.random.PRNGKey(0))
+    initial_step_num = 2
+    prev_action = jax.vmap(env.action_space(None).sample)(jax.random.split(jax.random.PRNGKey(0), num_envs))
+    assert isinstance(prev_action, jax.Array)
+    state = State(
+        agent_state,
+        env_state,
+        EnvStep(
+            new_episode=jnp.zeros((num_envs,), dtype=jnp.bool),
+            obs=obs,
+            prev_action=prev_action,
+            reward=jnp.zeros((num_envs,)),
+        ),
+        step_num=initial_step_num,
+    )
+    steps_per_cycle = 10
+    result, metrics = loop.run(state, 1, steps_per_cycle)
+    assert metrics[MetricKey.STEP_NUM] == [initial_step_num + steps_per_cycle]
+    assert env.reset.call_count == 0
 
 
 def test_bad_args():
@@ -164,8 +194,8 @@ def test_logs():
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
     assert not agent_state.inference
-    agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
-    assert agent_state.inference, "we set loop.inference, but agent_state.inference is False!"
+    result, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
+    assert result.agent_state.inference, "we set loop.inference, but agent_state.inference is False!"
     assert metrics
     for k in metrics:
         returned_values = metrics[k]
@@ -188,7 +218,7 @@ def test_continuous_action_space():
     steps_per_cycle = 1
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
-    agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
+    _, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     for k in metrics:
         assert not k.startswith("action_counts_")
 
@@ -212,6 +242,6 @@ def test_observe_trajectory():
 
         return {"ran": True}
 
-    agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle, observe_trajectory=observe_trajectory)
+    _, metrics = loop.run(agent_state, num_cycles, steps_per_cycle, observe_trajectory=observe_trajectory)
     for v in metrics["ran"]:
         assert v
