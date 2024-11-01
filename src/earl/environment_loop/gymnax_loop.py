@@ -4,7 +4,7 @@ import time
 import typing
 from collections.abc import Mapping
 from functools import partial
-from typing import Any, Generic
+from typing import Any, Generic, Protocol
 
 import equinox as eqx
 import jax
@@ -21,17 +21,29 @@ from research.earl.core import (
     Agent,
     AgentState,
     EnvStep,
-    ObserveTrajectory,
+    Image,
+    Metrics,
     _ExperienceState,
     _Networks,
     _OptState,
     _StepState,
 )
-from research.earl.logging.base import MetricLogger
+from research.earl.logging.base import MetricLogger, NoOpMetricLogger
 from research.earl.logging.metric_key import MetricKey
 from research.utils.eqx_filter import filter_scan  # TODO: remove deps on research
 
 _ALL_METRIC_KEYS = {str(k) for k in MetricKey}
+
+
+class ObserveTrajectory(Protocol):
+    def __call__(self, env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int) -> Metrics: ...
+
+    """Args:
+        env_steps: a trajectory of env timesteps where the shape of each field is
+            (num_envs, num_steps, *).
+        step_infos: the aggregated info returned from environment.step().
+        step_num: number of steps taken prior to the trajectory.
+    """
 
 
 class ConflictingMetricError(Exception):
@@ -147,7 +159,7 @@ class GymnaxLoop:
         self._agent = agent
         self._num_envs = num_envs
         self._key = key
-        self._logger = logger
+        self._logger = logger if logger else NoOpMetricLogger()
         self._inference = inference
         _run_cycle_and_update = partial(self._run_cycle_and_update)
         if assert_no_recompile:
@@ -243,7 +255,7 @@ class GymnaxLoop:
             )
 
             # convert arrays to python types
-            py_metrics: dict[str, float | int] = {}
+            py_metrics: dict[str, float | int | Image] = {}
             py_metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
             reward_mean = cycle_result.metrics[MetricKey.TOTAL_REWARD] / self._num_envs
             if MetricKey.REWARD_MEAN_SMOOTH not in all_metrics:
@@ -268,11 +280,13 @@ class GymnaxLoop:
                 py_metrics[k] = v.item()
 
             for k, v in trajectory_metrics.items():
-                if isinstance(v, jnp.ndarray):
+                if isinstance(v, jax.Array):
                     v = v.item()
                 py_metrics[k] = v
 
             for k, v in py_metrics.items():
+                if isinstance(v, Image):
+                    continue
                 all_metrics[k].append(v)
 
             if logger:

@@ -3,7 +3,7 @@
 import abc
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Generic, NamedTuple, Protocol, TypeVar
+from typing import Generic, NamedTuple, Protocol, TypeVar
 
 import equinox as eqx
 import jax
@@ -14,12 +14,21 @@ from gymnax.environments.spaces import Space
 from jax_dataclasses import pytree_dataclass
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
+
+class Image:
+    """When returning an image from observe_trajectory(), wrap it in this class.
+    This will allow the logger to recognize it as an Image."""
+
+    def __init__(self, image: jax.Array):
+        self.data = image
+
+
 _Networks = TypeVar("_Networks", bound=PyTree)
 _OptState = TypeVar("_OptState")
 _StepState = TypeVar("_StepState")
 _ExperienceState = TypeVar("_ExperienceState")
 # Keyed by name.
-Metrics = Mapping[str, Scalar | float | int]
+Metrics = Mapping[str, Scalar | float | int | Image]
 
 
 class SupportsStr(Protocol):
@@ -406,14 +415,3 @@ class Agent(abc.ABC, Generic[_Networks, _OptState, _ExperienceState, _StepState]
         - grads = jax.grad(multiple calls to self.select_action(state), one call to self.loss(state))()
         - state = self.optimize_from_grads(state, grads)
         """
-
-
-class ObserveTrajectory(Protocol):
-    def __call__(self, env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int) -> Metrics: ...
-
-    """Args:
-        env_steps: a trajectory of env timesteps where the shape of each field is
-            (num_envs, num_steps, *).
-        step_infos: the aggregated info returned from environment.step().
-        step_num: number of steps taken prior to the trajectory.
-    """

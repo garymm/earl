@@ -3,6 +3,7 @@ import time
 
 import mlflow
 import mlflow.entities
+import numpy as np
 
 from research.earl import core
 from research.earl.logging import base
@@ -35,16 +36,25 @@ class MlflowMetricLogger(base.MetricLogger):
 
     def write(self, metrics: core.Metrics):
         """Removes MetricKey.STEP_NUM from the metrics and uses it as the step number."""
-        step_num = int(metrics[MetricKey.STEP_NUM])
+        assert isinstance(metrics[MetricKey.STEP_NUM], int)
+        step_num = metrics[MetricKey.STEP_NUM]
         timestamp = int(time.time() * 1000)
-        metrics_list = []
+        metrics_list: list[mlflow.entities.Metric] = []
+        image_list: list[tuple[str, mlflow.Image]] = []
         for k, v in metrics.items():
             if k == MetricKey.STEP_NUM:
                 continue
             k = f"{self._prefix}{k}"
-            metrics_list.append(mlflow.entities.Metric(k, float(v), timestamp, step_num))
+            if isinstance(v, core.Image):
+                image_list.append((k, mlflow.Image(np.array(v.data))))
+            else:
+                metrics_list.append(mlflow.entities.Metric(k, float(v), timestamp, step_num))
 
-        self._client.log_batch(self._run_id, metrics=metrics_list, synchronous=False)
+        if metrics_list:
+            self._client.log_batch(self._run_id, metrics=metrics_list, synchronous=False)
+        assert isinstance(step_num, int)
+        for k, image in image_list:
+            self._client.log_image(self._run_id, image, key=k, step=step_num, synchronous=False)
 
     def _close(self):
         self._client.set_terminated(self._run_id)

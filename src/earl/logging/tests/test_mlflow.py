@@ -3,10 +3,13 @@ import threading
 import unittest
 from unittest.mock import Mock, call, patch
 
+import jax
+import jax.numpy as jnp
 import mlflow
 import pytest
 from mlflow.entities import Metric, Param
 
+from research.earl.core import Image
 from research.earl.logging.metric_key import MetricKey
 from research.earl.logging.mlflow import (
     MlflowConfigLogger,
@@ -26,6 +29,7 @@ class TestMlflowMetricLogger(unittest.TestCase):
     def test_write(self):
         label = "label"
         logger = MlflowMetricLogger(self.mock_client, self.run_id, label=label)
+
         self.addCleanup(logger.close)
         fake_time_s = 1000.1
         with pytest.raises(KeyError, match=MetricKey.STEP_NUM):
@@ -41,6 +45,21 @@ class TestMlflowMetricLogger(unittest.TestCase):
         # step num should be automatically incremented
         call_1 = call(self.run_id, metrics=[Metric(f"{label}/y", 0.95, int(fake_time_s * 1000), 1)], synchronous=False)
         self.mock_client.log_batch.assert_has_calls((call_0, call_1))
+
+        rng_key = jax.random.PRNGKey(0)
+        image = Image(jax.random.randint(rng_key, (10, 10, 3), 0, 256, dtype=jnp.uint8))
+        logger.write({MetricKey.STEP_NUM: 2, "z": image})
+        self.mock_client.log_image.assert_called_once()
+        call_args, call_kwargs = list(self.mock_client.log_image.call_args)
+
+        run_id, mlflow_image = call_args
+        assert run_id == self.run_id
+        assert call_kwargs["step"] == 2
+        assert call_kwargs["key"] == f"{label}/z"
+        assert not call_kwargs["synchronous"]
+        assert isinstance(mlflow_image, mlflow.Image)
+        sent_image = jnp.array(mlflow_image.image)
+        assert (sent_image == image.data).all()
 
     def test_close(self):
         logger = MlflowMetricLogger(self.mock_client, self.run_id)
