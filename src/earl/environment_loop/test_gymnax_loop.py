@@ -138,7 +138,7 @@ def test_run_with_state():
 
 def test_bad_args():
     num_envs = 2
-    agent = UniformRandom(gymnax.environments.spaces.Discrete(2), 0)
+    agent = UniformRandom(gymnax.environments.spaces.Discrete(2, jnp.int32), 0)
     env, env_params = gymnax.make("CartPole-v1")
     loop = GymnaxLoop(env, env_params, agent, num_envs, jax.random.PRNGKey(0))
     env_info = env_info_from_gymnax(env, env_params, num_envs)
