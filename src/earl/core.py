@@ -40,6 +40,13 @@ ConfigForLog = Mapping[str, SupportsStr]
 
 
 class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepState]):
+    """The state of an agent.
+
+    All pytree leaves in the fields of any subclass must be one of the following types:
+    bool, int, float, jax.Array. This allows them to be saved and restored
+    by orbax.
+    """
+
     step: _StepState
     nets: _Networks
     opt: _OptState
@@ -109,7 +116,7 @@ def env_info_from_gymnax(env: GymnaxEnv, params: EnvParams, num_envs: int) -> En
     return EnvInfo(num_envs, env.observation_space(params), env.action_space(params), env.name)
 
 
-class Agent(abc.ABC, Generic[_Networks, _OptState, _ExperienceState, _StepState]):
+class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepState]):
     """Abstract class for a reinforcement learning agent.
 
     Sub-classes should:
@@ -117,14 +124,23 @@ class Agent(abc.ABC, Generic[_Networks, _OptState, _ExperienceState, _StepState]
        See that type's docs for guideance.
      * Implement the abstract methods.
 
-    Sub-classes should not modify self after __init__(), since the methods are
-    jax.jit-compiled, meaning the self argument is static.
+    Agents are equinox.Modules, which means they are also pytrees and dataclasses.
+    Therefore you can use dataclass syntax when defining them, and __init__() will
+    automatically be defined for you.
+
+    E.g.:
+    class MyAgent(Agent[Networks, CycleState, StepState]):
+        foo: int = eqx.field(static=True)
+
+    All pytree leaves in the fields of any subclass must be one of the following types:
+    int, float, jnp.ndarray, or str. This allows them to be saved and restored
+    by orbax.
 
     The framework will conceptually do one of the following to train an agent:
 
     1. On-policy training (if num_off_policy_updates_per_cycle() == 0):
 
-    a = Agent(agent_config)
+    a = Agent()
     env = vectorized_env(env_config)
     state = a.new_training_state(...)
 
@@ -147,7 +163,7 @@ class Agent(abc.ABC, Generic[_Networks, _OptState, _ExperienceState, _StepState]
 
     2. Off-policy training (if num_off_policy_updates_per_cycle() > 0):
 
-    a = Agent(agent_config)
+    a = Agent()
     env = vectorized_env(env_config)
     state = a.new_training_state(...)
     def run_cycle(state, env_step):

@@ -50,8 +50,7 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, StepSt
     - This discounts rewards.
     """
 
-    def __init__(self, config: Config):
-        self.config = config
+    config: Config
 
     def _new_step_state(self, nets: eqx.nn.Sequential, env_info: EnvInfo, key: PRNGKeyArray) -> StepState:
         return StepState(

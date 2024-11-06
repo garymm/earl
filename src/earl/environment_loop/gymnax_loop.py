@@ -4,7 +4,7 @@ import time
 import typing
 from collections.abc import Mapping
 from functools import partial
-from typing import Any, Generic, Protocol
+from typing import Any, Generic
 
 import equinox as eqx
 import jax
@@ -22,28 +22,16 @@ from research.earl.core import (
     AgentState,
     EnvStep,
     Image,
-    Metrics,
     _ExperienceState,
     _Networks,
     _OptState,
     _StepState,
 )
-from research.earl.logging.base import MetricLogger, NoOpMetricLogger
+from research.earl.logging.base import MetricLogger, NoOpMetricLogger, ObserveTrajectory
 from research.earl.logging.metric_key import MetricKey
 from research.utils.eqx_filter import filter_scan  # TODO: remove deps on research
 
 _ALL_METRIC_KEYS = {str(k) for k in MetricKey}
-
-
-class ObserveTrajectory(Protocol):
-    def __call__(self, env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int) -> Metrics: ...
-
-    """Args:
-        env_steps: a trajectory of env timesteps where the shape of each field is
-            (num_envs, num_steps, *).
-        step_infos: the aggregated info returned from environment.step().
-        step_num: number of steps taken prior to the trajectory.
-    """
 
 
 class ConflictingMetricError(Exception):
@@ -138,6 +126,10 @@ class Result(State[_Networks, _OptState, _ExperienceState, _StepState]):
     env_step: EnvStep = EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0))
 
 
+def _noop_observe_trajectory(env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int):
+    return {}
+
+
 class GymnaxLoop:
     """Runs an Agent in a Gymnax environment.
 
@@ -159,6 +151,7 @@ class GymnaxLoop:
         num_envs: int,
         key: PRNGKeyArray,
         logger: MetricLogger | None = None,
+        observe_trajectory: ObserveTrajectory | None = None,
         inference: bool = False,
         assert_no_recompile: bool = True,
     ):
@@ -174,6 +167,8 @@ class GymnaxLoop:
             key: The PRNG key. Must not be shared with the agent state, as this will cause jax buffer donation
                 errors.
             logger: The logger to write metrics to.
+            observe_trajectory: A function that takes an EnvTimestep representing a trajectory of
+                length steps_per_cycle and runs any custom logic on it.
             inference: If False, agent.update_for_cycle() will not be called.
             assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         """
@@ -187,12 +182,31 @@ class GymnaxLoop:
         self._agent = agent
         self._num_envs = num_envs
         self._key = key
-        self._logger = logger if logger else NoOpMetricLogger()
+        self._logger = logger or NoOpMetricLogger()
+        self._observe_trajectory = observe_trajectory or _noop_observe_trajectory
         self._inference = inference
         _run_cycle_and_update = partial(self._run_cycle_and_update)
         if assert_no_recompile:
             _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=1)
         self._run_cycle_and_update = eqx.filter_jit(_run_cycle_and_update, donate="warn")
+
+    def reset_env(self) -> tuple[EnvState, EnvStep]:
+        """Resets the environment.
+
+        Should probably not be called by most users.
+        Exposed so that callers can get the env_state and env_step to restore from a checkpoint.
+        """
+        env_key, self._key = jax.random.split(self._key, 2)
+        env_keys = jax.random.split(env_key, self._num_envs)
+        obs, env_state = jax.vmap(self._env_reset)(env_keys)
+
+        env_step = EnvStep(
+            new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
+            obs=obs,
+            prev_action=jnp.zeros_like(self._example_action),
+            reward=jnp.zeros((self._num_envs,)),
+        )
+        return env_state, env_step
 
     def run(
         self,
@@ -201,7 +215,6 @@ class GymnaxLoop:
         num_cycles: int,
         steps_per_cycle: int,
         print_progress=True,
-        observe_trajectory: ObserveTrajectory | None = None,
     ) -> tuple[Result[_Networks, _OptState, _ExperienceState, _StepState], dict[str, list[float | int]]]:
         """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
@@ -219,8 +232,7 @@ class GymnaxLoop:
             step_num_metric_start: The value to start the step number metric at. This is useful
                 when calling this function multiple times. Typically should be incremented by
                 num_cycles * steps_per_cycle between calls.
-            observe_trajectory: A function that takes an EnvTimestep representing a trajectory of
-                length steps_per_cycle and runs any custom logic on it.
+
 
         Returns:
             The final loop state and a dictionary of metrics.
@@ -240,16 +252,7 @@ class GymnaxLoop:
 
         if state.env_state is None:
             assert state.env_step is None
-            env_key, self._key = jax.random.split(self._key, 2)
-            env_keys = jax.random.split(env_key, self._num_envs)
-            obs, env_state = jax.vmap(self._env_reset)(env_keys)
-
-            env_step = EnvStep(
-                new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
-                obs=obs,
-                prev_action=jnp.zeros_like(self._example_action),
-                reward=jnp.zeros((self._num_envs,)),
-            )
+            env_state, env_step = self.reset_env()
         else:
             env_state = state.env_state
             assert state.env_step is not None
@@ -263,13 +266,6 @@ class GymnaxLoop:
         if print_progress:
             cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
 
-        if observe_trajectory is None:
-
-            def noop(env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int):
-                return {}
-
-            observe_trajectory = noop  # So that I don't need to add an assertion in the inner loop for pyright
-
         for cycle_num in cycles_iter:
             cycle_start = time.monotonic()
             # We saw some environments inconsistently returning weak_type, which triggers recompilation
@@ -281,7 +277,7 @@ class GymnaxLoop:
             )
             cycle_result = self._run_cycle_and_update(agent_state, env_state, env_step, self._key, steps_per_cycle)
 
-            trajectory_metrics = observe_trajectory(
+            trajectory_metrics = self._observe_trajectory(
                 cycle_result.trajectory,
                 cycle_result.step_infos,
                 step_num_metric_start + cycle_num * steps_per_cycle,

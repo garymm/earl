@@ -2,9 +2,9 @@
 
 import abc
 import weakref
-from typing import Protocol
+from typing import Any, Protocol
 
-from research.earl.core import ConfigForLog, Metrics
+from research.earl.core import ConfigForLog, EnvStep, Metrics
 
 
 class Closable(abc.ABC):
@@ -74,3 +74,14 @@ class NoOpConfigLogger(ConfigLogger):
 
 class ConfigLoggerFactory(Protocol):
     def __call__(self) -> ConfigLogger: ...
+
+
+class ObserveTrajectory(Protocol):
+    def __call__(self, env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int) -> Metrics: ...
+
+    """Args:
+        env_steps: a trajectory of env timesteps where the shape of each field is
+            (num_envs, num_steps, *).
+        step_infos: the aggregated info returned from environment.step().
+        step_num: number of steps taken prior to the trajectory.
+    """
