@@ -9,7 +9,6 @@ from typing import Any, Generic
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax_dataclasses as jdc
 import optax
 from gymnax import EnvState
 from gymnax.environments.environment import Environment as GymnaxEnvironment
@@ -38,8 +37,7 @@ class ConflictingMetricError(Exception):
     pass
 
 
-@jdc.pytree_dataclass()
-class _StepCarry(Generic[_StepState]):
+class _StepCarry(eqx.Module, Generic[_StepState]):
     env_step: EnvStep
     env_state: EnvState
     step_state: _StepState
@@ -56,8 +54,7 @@ class _StepCarry(Generic[_StepState]):
 _ArrayMetrics = dict[str, jnp.ndarray]
 
 
-@jdc.pytree_dataclass()
-class _CycleResult:
+class _CycleResult(eqx.Module):
     agent_state: PyTree
     env_state: EnvState
     env_step: EnvStep
@@ -362,7 +359,7 @@ class GymnaxLoop:
             mutable_metrics: _ArrayMetrics = typing.cast(_ArrayMetrics, dict(metrics))
             mutable_metrics[MetricKey.LOSS] = loss
             mutable_metrics.update(cycle_result.metrics)
-            return loss, jdc.replace(cycle_result, metrics=mutable_metrics, agent_state=agent_state)
+            return loss, dataclasses.replace(cycle_result, metrics=mutable_metrics, agent_state=agent_state)
 
         @eqx.filter_grad(has_aux=True)
         def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state) -> tuple[Scalar, _ArrayMetrics]:
@@ -378,7 +375,9 @@ class GymnaxLoop:
             agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
         ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], _ArrayMetrics]:
             nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
-            grad, metrics = _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, jdc.replace(agent_state, nets=None))
+            grad, metrics = _loss_for_cycle_grad(
+                nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None)
+            )
             grad_means = _pytree_leaf_means(grad, "grad_mean")
             metrics.update(grad_means)
             agent_state = self._agent.optimize_from_grads(agent_state, grad)
@@ -439,7 +438,7 @@ class GymnaxLoop:
         """Runs self._agent and self._env for num_steps."""
 
         def scan_body(inp: _StepCarry[_StepState], _) -> tuple[_StepCarry[_StepState], tuple[EnvStep, dict[Any, Any]]]:
-            agent_state_for_step = jdc.replace(agent_state, step=inp.step_state)
+            agent_state_for_step = dataclasses.replace(agent_state, step=inp.step_state)
 
             agent_step = self._agent.step(agent_state_for_step, inp.env_step)
             action = agent_step.action

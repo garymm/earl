@@ -11,7 +11,6 @@ import jax.numpy as jnp
 from gymnax.environments.environment import Environment as GymnaxEnv
 from gymnax.environments.environment import EnvParams
 from gymnax.environments.spaces import Space
-from jax_dataclasses import pytree_dataclass
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
 
@@ -83,8 +82,7 @@ class AgentStep(NamedTuple, Generic[_StepState]):
     state: _StepState
 
 
-@pytree_dataclass
-class EnvStep:
+class EnvStep(eqx.Module):
     """The result of taking an action in an environment.
 
     Note that it may be a batch of timesteps, in which case

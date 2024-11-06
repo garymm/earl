@@ -1,9 +1,9 @@
+import dataclasses
 from collections.abc import Callable
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-import jax_dataclasses as jdc
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
 from research.earl.core import Agent, AgentStep, EnvInfo, EnvStep, Metrics
@@ -56,7 +56,7 @@ class UniformRandom(Agent[None, OptState, None, StepState]):
 
     def _optimize_from_grads(self, state: AgentState, nets_grads: PyTree) -> AgentState:
         assert state.opt is not None
-        return jdc.replace(state, opt=OptState(state.opt.opt_count + 1))
+        return dataclasses.replace(state, opt=OptState(state.opt.opt_count + 1))
 
     def _update_experience(self, state: AgentState, trajectory: EnvStep) -> None:
         return None

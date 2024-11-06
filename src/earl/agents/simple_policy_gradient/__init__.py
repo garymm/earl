@@ -4,7 +4,6 @@ from collections.abc import Callable
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax_dataclasses as jdc
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
@@ -12,8 +11,7 @@ from research.earl.core import Agent, AgentStep, EnvInfo, EnvStep, Metrics
 from research.earl.core import AgentState as CoreAgentState
 
 
-@jdc.pytree_dataclass
-class StepState:
+class StepState(eqx.Module):
     chosen_action_log_probs: jnp.ndarray
     key: PRNGKeyArray
     mask: jnp.ndarray  # 0 if env was ever done.
