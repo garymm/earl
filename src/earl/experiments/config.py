@@ -84,6 +84,17 @@ class ExperimentConfig(abc.ABC):
     steps_per_cycle: int
     checkpoint: CheckpointConfig | None = None
 
+    def __post_init__(self):
+        if self.num_eval_cycles < 0:
+            raise ValueError(f"num_eval_cycles must be non-negative. Got {self.num_eval_cycles}")
+        if self.num_train_cycles <= 0:
+            raise ValueError(f"num_train_cycles must be positive. Got {self.num_train_cycles}")
+        if self.num_eval_cycles > 0 and self.num_train_cycles % self.num_eval_cycles != 0:
+            raise ValueError(
+                f"num_train_cycles must be divisible by num_eval_cycles. Got {self.num_train_cycles} and "
+                f"{self.num_eval_cycles}"
+            )
+
 
 ExperimentConfig.__init__.__doc__ = """
 Args:

@@ -2,6 +2,7 @@
 
 import abc
 import weakref
+from collections import defaultdict
 from typing import Any, Protocol
 
 from research.earl.core import ConfigForLog, EnvStep, Metrics
@@ -70,6 +71,19 @@ class NoOpConfigLogger(ConfigLogger):
 
     def _close(self):
         pass
+
+
+class AppendMetricLogger(MetricLogger):
+    def __init__(self):
+        super().__init__()
+        self.metrics = defaultdict(list)
+
+    def write(self, metrics: Metrics):
+        for key, value in metrics.items():
+            self.metrics[key].append(value)
+
+    def _close(self):
+        self.metrics = defaultdict(list)
 
 
 class ConfigLoggerFactory(Protocol):

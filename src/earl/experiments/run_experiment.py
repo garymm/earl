@@ -112,12 +112,6 @@ def _new_checkpoint_manager(directory: str | pathlib.Path, opts: ocp.CheckpointM
 def run_experiment(config: ExperimentConfig) -> LoopResult:
     """Runs an experiment as specified in config."""
 
-    if config.num_eval_cycles and config.num_train_cycles % config.num_eval_cycles:
-        raise ValueError(
-            f"num_train_cycles must be divisible by num_eval_cycles, got {config.num_train_cycles} and "
-            f"{config.num_eval_cycles}"
-        )
-
     agent = config.new_agent()
     key = jax.random.PRNGKey(config.random_seed)
     env = config.new_env()
