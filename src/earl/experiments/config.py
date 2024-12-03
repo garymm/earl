@@ -9,7 +9,7 @@ from gymnax.environments.environment import Environment
 from jaxtyping import PyTree
 
 from research.earl.core import Agent
-from research.earl.logging.base import ConfigLogger, MetricLogger, NoOpConfigLogger, NoOpMetricLogger, ObserveTrajectory
+from research.earl.logging.base import ConfigLogger, MetricLogger, NoOpConfigLogger, NoOpMetricLogger, ObserveCycle
 
 
 class CheckpointRestoreMode(enum.StrEnum):
@@ -67,7 +67,7 @@ class ExperimentConfig(abc.ABC):
     @abc.abstractmethod
     def new_networks(self) -> PyTree: ...
 
-    def new_observe_trajectory(self, phase: Phase) -> ObserveTrajectory | None:
+    def new_observe_cycle(self, phase: Phase) -> ObserveCycle | None:
         return None
 
     def new_config_logger(self) -> ConfigLogger:

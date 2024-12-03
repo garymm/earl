@@ -1,5 +1,4 @@
 import dataclasses
-from typing import Any
 from unittest import mock
 
 import gymnax
@@ -171,7 +170,7 @@ def test_continuous_action_space():
         assert not k.startswith("action_counts_")
 
 
-def test_observe_trajectory():
+def test_observe_cycle():
     env, env_params = gymnax.make("Swimmer-misc")
     networks = None
     num_envs = 2
@@ -182,16 +181,14 @@ def test_observe_trajectory():
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
 
-    def observe_trajectory(env_steps: EnvStep, step_infos: dict[str, Any], step_num: int):
-        assert env_steps.obs.shape[0] == num_envs
-        assert env_steps.obs.shape[1] == steps_per_cycle
-        assert "discount" in step_infos
+    def observe_cycle(cycle_result: base.CycleResult) -> base.Metrics:
+        assert cycle_result.trajectory.obs.shape[0] == num_envs
+        assert cycle_result.trajectory.obs.shape[1] == steps_per_cycle
+        assert "discount" in cycle_result.step_infos
 
         return {"ran": True}
 
-    loop = GymnaxLoop(
-        env, env_params, agent, num_envs, next(key_gen), inference=True, observe_trajectory=observe_trajectory
-    )
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), inference=True, observe_cycle=observe_cycle)
     _, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
     for v in metrics["ran"]:
         assert v

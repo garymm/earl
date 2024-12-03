@@ -26,7 +26,7 @@ from research.earl.core import (
     _OptState,
     _StepState,
 )
-from research.earl.logging.base import MetricLogger, NoOpMetricLogger, ObserveTrajectory
+from research.earl.logging.base import ArrayMetrics, CycleResult, MetricLogger, NoOpMetricLogger, ObserveCycle
 from research.earl.logging.metric_key import MetricKey
 from research.utils.eqx_filter import filter_scan  # TODO: remove deps on research
 
@@ -49,19 +49,6 @@ class _StepCarry(eqx.Module, Generic[_StepState]):
     complete_episode_length_sum: Scalar
     complete_episode_count: Scalar
     action_counts: jnp.ndarray
-
-
-_ArrayMetrics = dict[str, jnp.ndarray]
-
-
-class _CycleResult(eqx.Module):
-    agent_state: PyTree
-    env_state: EnvState
-    env_step: EnvStep
-    key: PRNGKeyArray
-    metrics: _ArrayMetrics
-    trajectory: EnvStep
-    step_infos: dict[Any, Any]
 
 
 def _raise_if_metric_conflicts(metrics: Mapping):
@@ -123,7 +110,7 @@ class Result(State[_Networks, _OptState, _ExperienceState, _StepState]):
     env_step: EnvStep = EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0))
 
 
-def _noop_observe_trajectory(env_steps: EnvStep, step_infos: dict[Any, Any], step_num: int):
+def _noop_observe_cycle(cycle_result: CycleResult) -> ArrayMetrics:
     return {}
 
 
@@ -148,7 +135,7 @@ class GymnaxLoop:
         num_envs: int,
         key: PRNGKeyArray,
         logger: MetricLogger | None = None,
-        observe_trajectory: ObserveTrajectory | None = None,
+        observe_cycle: ObserveCycle | None = None,
         inference: bool = False,
         assert_no_recompile: bool = True,
     ):
@@ -164,8 +151,8 @@ class GymnaxLoop:
             key: The PRNG key. Must not be shared with the agent state, as this will cause jax buffer donation
                 errors.
             logger: The logger to write metrics to.
-            observe_trajectory: A function that takes an EnvTimestep representing a trajectory of
-                length steps_per_cycle and runs any custom logic on it.
+            observe_cycle: A function that takes a CycleResult representing a final environment state and a trajectory
+                of length steps_per_cycle and runs any custom logic on it.
             inference: If False, agent.update_for_cycle() will not be called.
             assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         """
@@ -180,7 +167,7 @@ class GymnaxLoop:
         self._num_envs = num_envs
         self._key = key
         self._logger = logger or NoOpMetricLogger()
-        self._observe_trajectory = observe_trajectory or _noop_observe_trajectory
+        self._observe_cycle = observe_cycle or _noop_observe_cycle
         self._inference = inference
         _run_cycle_and_update = partial(self._run_cycle_and_update)
         if assert_no_recompile:
@@ -274,14 +261,10 @@ class GymnaxLoop:
             )
             cycle_result = self._run_cycle_and_update(agent_state, env_state, env_step, self._key, steps_per_cycle)
 
-            trajectory_metrics = self._observe_trajectory(
-                cycle_result.trajectory,
-                cycle_result.step_infos,
-                step_num_metric_start + cycle_num * steps_per_cycle,
-            )
+            cycle_metrics = self._observe_cycle(cycle_result)
             # Could potentially be very slow if there are lots
             # of metrics to compare
-            _raise_if_metric_conflicts(trajectory_metrics)
+            _raise_if_metric_conflicts(cycle_metrics)
 
             agent_state, env_state, env_step, self._key = (
                 cycle_result.agent_state,
@@ -315,7 +298,7 @@ class GymnaxLoop:
                 assert v.shape == (), f"Expected scalar metric {k} to be scalar, got {v.shape}"
                 py_metrics[k] = v.item()
 
-            for k, v in trajectory_metrics.items():
+            for k, v in cycle_metrics.items():
                 if isinstance(v, jax.Array):
                     v = v.item()
                 py_metrics[k] = v
@@ -338,7 +321,7 @@ class GymnaxLoop:
         env_step: EnvStep,
         key: PRNGKeyArray,
         steps_per_cycle: int,
-    ) -> _CycleResult:
+    ) -> CycleResult:
         @eqx.filter_grad(has_aux=True)
         def _run_cycle_and_loss_grad(
             nets_yes_grad: PyTree,
@@ -348,7 +331,7 @@ class GymnaxLoop:
             env_step: EnvStep,
             num_steps: int,
             key: PRNGKeyArray,
-        ) -> tuple[Scalar, _CycleResult]:
+        ) -> tuple[Scalar, CycleResult]:
             agent_state = dataclasses.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
             cycle_result = self._run_cycle(agent_state, env_state, env_step, num_steps, key)
             experience_state = self._agent.update_experience(cycle_result.agent_state, cycle_result.trajectory)
@@ -356,24 +339,24 @@ class GymnaxLoop:
             loss, metrics = self._agent.loss(agent_state)
             _raise_if_metric_conflicts(metrics)
             # inside jit, return values are guaranteed to be arrays
-            mutable_metrics: _ArrayMetrics = typing.cast(_ArrayMetrics, dict(metrics))
+            mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
             mutable_metrics[MetricKey.LOSS] = loss
             mutable_metrics.update(cycle_result.metrics)
             return loss, dataclasses.replace(cycle_result, metrics=mutable_metrics, agent_state=agent_state)
 
         @eqx.filter_grad(has_aux=True)
-        def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state) -> tuple[Scalar, _ArrayMetrics]:
+        def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state) -> tuple[Scalar, ArrayMetrics]:
             agent_state = dataclasses.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
             loss, metrics = self._agent.loss(agent_state)
             _raise_if_metric_conflicts(metrics)
             # inside jit, return values are guaranteed to be arrays
-            mutable_metrics: _ArrayMetrics = typing.cast(_ArrayMetrics, dict(metrics))
+            mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
             mutable_metrics[MetricKey.LOSS] = loss
             return loss, mutable_metrics
 
         def _off_policy_update(
             agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
-        ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], _ArrayMetrics]:
+        ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
             nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
             grad, metrics = _loss_for_cycle_grad(
                 nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None)
@@ -417,7 +400,7 @@ class GymnaxLoop:
             # This is potentially misleading, but not sure what else to do.
             metrics.update({k: jnp.mean(v) for k, v in off_policy_metrics.items()})
 
-        return _CycleResult(
+        return CycleResult(
             agent_state,
             cycle_result.env_state,
             cycle_result.env_step,
@@ -434,7 +417,7 @@ class GymnaxLoop:
         env_step: EnvStep,
         num_steps: int,
         key: PRNGKeyArray,
-    ) -> _CycleResult:
+    ) -> CycleResult:
         """Runs self._agent and self._env for num_steps."""
 
         def scan_body(inp: _StepCarry[_StepState], _) -> tuple[_StepCarry[_StepState], tuple[EnvStep, dict[Any, Any]]]:
@@ -532,7 +515,7 @@ class GymnaxLoop:
 
         trajectory = jax.tree.map(to_num_envs_first, trajectory)
 
-        return _CycleResult(
+        return CycleResult(
             agent_state,
             final_carry.env_state,
             final_carry.env_step,

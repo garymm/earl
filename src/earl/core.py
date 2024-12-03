@@ -15,7 +15,7 @@ from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
 
 class Image:
-    """When returning an image from observe_trajectory(), wrap it in this class.
+    """When returning an image from observe_cycle(), wrap it in this class.
     This will allow the logger to recognize it as an Image."""
 
     def __init__(self, image: jax.Array):
@@ -319,7 +319,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
     ) -> _ExperienceState:
         """Observes a trajectory of environment timesteps and updates the experience state.
 
-        Sub-classes should override _observe_trajectory. This method is a wrapper that adds jit-compilation.
+        Sub-classes should override _observe_cycle. This method is a wrapper that adds jit-compilation.
 
         Args:
             state: The current agent state. State.experience is donated, so callers should not access it after calling.

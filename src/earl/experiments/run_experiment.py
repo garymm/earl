@@ -118,7 +118,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     env_params = config.env
     networks = config.new_networks()
     train_logger = config.new_metric_logger(Phase.TRAIN)
-    train_observe_trajectory = config.new_observe_trajectory(Phase.TRAIN)
+    train_observe_cycle = config.new_observe_cycle(Phase.TRAIN)
     train_key, key = jax.random.split(key)
     checkpoint_manager = None
     num_envs = config.num_envs
@@ -136,7 +136,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
             )["num_envs"]
             num_envs = int(num_envs)
     train_loop = GymnaxLoop(
-        env, env_params, agent, num_envs, key, logger=train_logger, observe_trajectory=train_observe_trajectory
+        env, env_params, agent, num_envs, key, logger=train_logger, observe_cycle=train_observe_cycle
     )
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     train_agent_state = agent.new_state(networks, env_info, train_key)
@@ -173,7 +173,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
             config.num_envs,
             eval_key,
             logger=config.new_metric_logger(Phase.EVAL),
-            observe_trajectory=config.new_observe_trajectory(Phase.EVAL),
+            observe_cycle=config.new_observe_cycle(Phase.EVAL),
             inference=True,
         )
 
