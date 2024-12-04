@@ -110,6 +110,23 @@ class Result(State[_Networks, _OptState, _ExperienceState, _StepState]):
     env_step: EnvStep = EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0))
 
 
+def result_to_cycle_result(result: Result) -> CycleResult:
+    """Converts a Result to a CycleResult.
+
+    Result does not contain all the fields that CycleResult does, namely key, metrics, trajectory, and step_infos.
+    This function fills in the missing fields with dummy values.
+    """
+    return CycleResult(
+        agent_state=result.agent_state,
+        env_state=result.env_state,
+        env_step=result.env_step,
+        key=jax.random.PRNGKey(0),
+        metrics={},
+        trajectory=EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0)),
+        step_infos={},
+    )
+
+
 def _noop_observe_cycle(cycle_result: CycleResult) -> ArrayMetrics:
     return {}
 
@@ -198,7 +215,7 @@ class GymnaxLoop:
         | AgentState[_Networks, _OptState, _ExperienceState, _StepState],
         num_cycles: int,
         steps_per_cycle: int,
-        print_progress=True,
+        print_progress: bool = True,
     ) -> tuple[Result[_Networks, _OptState, _ExperienceState, _StepState], dict[str, list[float | int]]]:
         """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
@@ -311,7 +328,12 @@ class GymnaxLoop:
             if logger:
                 logger.write(py_metrics)
 
-        result = Result(agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle)
+        result = Result(
+            agent_state=agent_state,
+            env_state=env_state,
+            env_step=env_step,
+            step_num=step_num_metric_start + num_cycles * steps_per_cycle,
+        )
         return result, all_metrics
 
     def _run_cycle_and_update(
@@ -426,7 +448,7 @@ class GymnaxLoop:
             agent_step = self._agent.step(agent_state_for_step, inp.env_step)
             action = agent_step.action
             if isinstance(self._action_space, Discrete):
-                one_hot_actions = jax.nn.one_hot(action, self._env.num_actions, dtype=inp.action_counts.dtype)
+                one_hot_actions = jax.nn.one_hot(action, self._action_space.n, dtype=inp.action_counts.dtype)
                 action_counts = inp.action_counts + jnp.sum(one_hot_actions, axis=0)
             else:
                 action_counts = inp.action_counts
@@ -450,16 +472,16 @@ class GymnaxLoop:
 
             return (
                 _StepCarry(
-                    next_timestep,
-                    env_state,
-                    agent_step.state,
-                    key,
-                    total_reward,
-                    total_dones,
-                    episode_steps,
-                    episode_length_sum,
-                    episode_count,
-                    action_counts,
+                    env_step=next_timestep,
+                    env_state=env_state,
+                    step_state=agent_step.state,
+                    key=key,
+                    total_reward=total_reward,
+                    total_dones=total_dones,
+                    episode_steps=episode_steps,
+                    complete_episode_length_sum=episode_length_sum,
+                    complete_episode_count=episode_count,
+                    action_counts=action_counts,
                 ),
                 # NOTE: the very last env step in the last cycle is never returned in a trajectory.
                 # I can't think of a clean way to do it, and losing a single step is unlikely to matter.
@@ -467,23 +489,23 @@ class GymnaxLoop:
             )
 
         if isinstance(self._action_space, Discrete):
-            action_counts = jnp.zeros(self._env.num_actions, dtype=jnp.uint32)
+            action_counts = jnp.zeros(self._action_space.n, dtype=jnp.uint32)
         else:
             action_counts = jnp.array(0, dtype=jnp.uint32)
 
         final_carry, (trajectory, step_infos) = filter_scan(
             scan_body,
             init=_StepCarry(
-                env_step,
-                env_state,
-                agent_state.step,
-                key,
-                jnp.array(0.0),
-                jnp.array(0, dtype=jnp.uint32),
-                jnp.zeros(self._num_envs, dtype=jnp.uint32),
-                jnp.array(0, dtype=jnp.uint32),
-                jnp.array(0, dtype=jnp.uint32),
-                action_counts,
+                env_step=env_step,
+                env_state=env_state,
+                step_state=agent_state.step,
+                key=key,
+                total_reward=jnp.array(0.0),
+                total_dones=jnp.array(0, dtype=jnp.uint32),
+                episode_steps=jnp.zeros(self._num_envs, dtype=jnp.uint32),
+                complete_episode_length_sum=jnp.array(0, dtype=jnp.uint32),
+                complete_episode_count=jnp.array(0, dtype=jnp.uint32),
+                action_counts=action_counts,
             ),
             xs=None,
             length=num_steps,

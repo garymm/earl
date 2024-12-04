@@ -149,9 +149,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
         assert config.checkpoint is not None
         if config.checkpoint.restore_from_checkpoint is not None:
             env_state, env_step = train_loop.reset_env()
-            train_loop_state = LoopResult(
-                agent_state=train_loop_state.agent_state, env_state=env_state, env_step=env_step
-            )
+            train_loop_state = LoopResult(train_loop_state.agent_state, env_state, env_step)
             agent, env_params, train_loop_state = _restore_checkpoint(
                 checkpoint_manager, config.checkpoint.restore_from_checkpoint, agent, env_params, train_loop_state
             )
