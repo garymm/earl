@@ -12,11 +12,11 @@ from research.earl.core import AgentState as CoreAgentState
 
 class StepState(NamedTuple):
     key: PRNGKeyArray
-    t: jnp.ndarray
+    t: jax.Array
 
 
 class OptState(NamedTuple):
-    opt_count: jnp.ndarray
+    opt_count: jax.Array
 
 
 AgentState = CoreAgentState[None, OptState, None, StepState]
@@ -42,7 +42,7 @@ class UniformRandom(Agent[None, OptState, None, StepState]):
         key, action_key = jax.random.split(state.step.key)
         num_envs = env_step.obs.shape[0]
         actions = jax.vmap(self._sample_action_space)(jax.random.split(action_key, num_envs))
-        assert isinstance(actions, jnp.ndarray)
+        assert isinstance(actions, jax.Array)
         return AgentStep(actions, StepState(key, state.step.t + 1))
 
     def _partition_for_grad(self, nets: None) -> tuple[None, None]:

@@ -12,11 +12,11 @@ from research.earl.core import AgentState as CoreAgentState
 
 
 class StepState(eqx.Module):
-    chosen_action_log_probs: jnp.ndarray
+    chosen_action_log_probs: jax.Array
     key: PRNGKeyArray
-    mask: jnp.ndarray  # 0 if env was ever done.
-    rewards: jnp.ndarray
-    t: jnp.ndarray
+    mask: jax.Array  # 0 if env was ever done.
+    rewards: jax.Array
+    t: jax.Array
 
 
 @dataclasses.dataclass(eq=True, frozen=True)
@@ -73,7 +73,7 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, StepSt
         log_probs_for_actions = jnp.take_along_axis(log_probs, actions[:, None], axis=1).squeeze(axis=1)
 
         # This will silently be a no-op if step.t >= max_step_state_history.
-        def set_batch(buf: jnp.ndarray, newval: jnp.ndarray):
+        def set_batch(buf: jax.Array, newval: jax.Array):
             return buf.at[:, state.step.t].set(newval)
 
         step = dataclasses.replace(

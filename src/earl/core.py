@@ -7,7 +7,6 @@ from typing import Generic, NamedTuple, Protocol, TypeVar
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 from gymnax.environments.environment import Environment as GymnaxEnv
 from gymnax.environments.environment import EnvParams
 from gymnax.environments.spaces import Space
@@ -78,7 +77,7 @@ inference: True means inference mode, False means training.
 class AgentStep(NamedTuple, Generic[_StepState]):
     """A batch of actions and updated hidden state."""
 
-    action: jnp.ndarray
+    action: jax.Array
     state: _StepState
 
 
@@ -96,10 +95,10 @@ class EnvStep(eqx.Module):
     2. The last timestep of an episode (since the the environment automatically
        resets and the observation is the first of the next episode).
     """
-    new_episode: jnp.ndarray
+    new_episode: jax.Array
     obs: PyTree
-    prev_action: jnp.ndarray  # the action taken in the previous timestep
-    reward: jnp.ndarray
+    prev_action: jax.Array  # the action taken in the previous timestep
+    reward: jax.Array
 
 
 @dataclass(frozen=True)
@@ -131,7 +130,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
         foo: int = eqx.field(static=True)
 
     All pytree leaves in the fields of any subclass must be one of the following types:
-    int, float, jnp.ndarray, or str. This allows them to be saved and restored
+    int, float, jax.Array, or str. This allows them to be saved and restored
     by orbax.
 
     The framework will conceptually do one of the following to train an agent:

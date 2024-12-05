@@ -45,10 +45,10 @@ class _StepCarry(eqx.Module, Generic[_StepState]):
     total_reward: Scalar
     total_dones: Scalar
     """Number of steps in current episode for each environment."""
-    episode_steps: jnp.ndarray
+    episode_steps: jax.Array
     complete_episode_length_sum: Scalar
     complete_episode_count: Scalar
-    action_counts: jnp.ndarray
+    action_counts: jax.Array
 
 
 def _raise_if_metric_conflicts(metrics: Mapping):
@@ -300,13 +300,13 @@ class GymnaxLoop:
                 reward_mean_smooth = optax.incremental_update(
                     jnp.array(reward_mean), all_metrics[MetricKey.REWARD_MEAN_SMOOTH][-1], 0.01
                 )
-            assert isinstance(reward_mean_smooth, jnp.ndarray)
+            assert isinstance(reward_mean_smooth, jax.Array)
             py_metrics[MetricKey.REWARD_MEAN_SMOOTH] = float(reward_mean_smooth)
 
             py_metrics[MetricKey.STEP_NUM] = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
 
             action_counts = cycle_result.metrics.pop(MetricKey.ACTION_COUNTS)
-            assert isinstance(action_counts, jnp.ndarray)
+            assert isinstance(action_counts, jax.Array)
             if action_counts.shape:  # will be empty tuple if not discrete action space
                 for i in range(action_counts.shape[0]):
                     py_metrics[f"action_counts/{i}"] = int(action_counts[i])
@@ -518,7 +518,7 @@ class GymnaxLoop:
             final_carry.complete_episode_length_sum / final_carry.complete_episode_count,
             0,
         )
-        assert isinstance(complete_episode_length_mean, jnp.ndarray)
+        assert isinstance(complete_episode_length_mean, jax.Array)
 
         metrics = {}
         # mean across environments
@@ -531,7 +531,7 @@ class GymnaxLoop:
         # Somewhat arbitrary, but flashbax expects (num_envs, num_steps, ...)
         # so we make it easier on users by transposing here.
         def to_num_envs_first(x):
-            if isinstance(x, jnp.ndarray) and x.ndim > 1:
+            if isinstance(x, jax.Array) and x.ndim > 1:
                 return jnp.transpose(x, (1, 0, *range(2, x.ndim)))
             return x
 
