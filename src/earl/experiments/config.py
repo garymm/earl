@@ -37,7 +37,7 @@ Checkpoints
 Args:
     directory: Directory to save checkpoints to.
     checkpoint_manager_options: Options for the checkpoint manager.
-      If best_fn is not set, will use MetricKey.REWARD_MEAN_SMOOTH.
+      If best_fn is not set, will use MetricKey.REWARD_MEAN.
     restore_from_checkpoint: If not None, the experiment will restore from this checkpoint.
       If int, the experiment will be interpreted as a (training) step number.
       Logging will use step numbers starting from the cycle after the restored cycle.

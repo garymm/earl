@@ -1,4 +1,3 @@
-import collections
 import dataclasses
 import time
 import typing
@@ -9,7 +8,6 @@ from typing import Any, Generic
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import optax
 from gymnax import EnvState
 from gymnax.environments.environment import Environment as GymnaxEnvironment
 from gymnax.environments.spaces import Discrete
@@ -20,7 +18,7 @@ from research.earl.core import (
     Agent,
     AgentState,
     EnvStep,
-    Image,
+    Metrics,
     _ExperienceState,
     _Networks,
     _OptState,
@@ -216,7 +214,7 @@ class GymnaxLoop:
         num_cycles: int,
         steps_per_cycle: int,
         print_progress: bool = True,
-    ) -> tuple[Result[_Networks, _OptState, _ExperienceState, _StepState], dict[str, list[float | int]]]:
+    ) -> tuple[Result[_Networks, _OptState, _ExperienceState, _StepState], Mapping[str, list[int | float]]]:
         """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
         Args:
@@ -249,7 +247,7 @@ class GymnaxLoop:
 
         agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference)
 
-        all_metrics = collections.defaultdict(list)
+        all_metrics = []
 
         if state.env_state is None:
             assert state.env_step is None
@@ -262,7 +260,6 @@ class GymnaxLoop:
         step_num_metric_start = state.step_num
         del state
 
-        logger = self._logger
         cycles_iter = range(num_cycles)
         if print_progress:
             cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
@@ -291,42 +288,28 @@ class GymnaxLoop:
             )
 
             # convert arrays to python types
-            py_metrics: dict[str, float | int | Image] = {}
-            py_metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
-            reward_mean = cycle_result.metrics[MetricKey.TOTAL_REWARD] / self._num_envs
-            if MetricKey.REWARD_MEAN_SMOOTH not in all_metrics:
-                reward_mean_smooth = reward_mean
-            else:
-                reward_mean_smooth = optax.incremental_update(
-                    jnp.array(reward_mean), all_metrics[MetricKey.REWARD_MEAN_SMOOTH][-1], 0.01
-                )
-            assert isinstance(reward_mean_smooth, jax.Array)
-            py_metrics[MetricKey.REWARD_MEAN_SMOOTH] = float(reward_mean_smooth)
-
-            py_metrics[MetricKey.STEP_NUM] = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
+            metrics: Metrics = {}
+            metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
+            metrics[MetricKey.STEP_NUM] = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
 
             action_counts = cycle_result.metrics.pop(MetricKey.ACTION_COUNTS)
             assert isinstance(action_counts, jax.Array)
             if action_counts.shape:  # will be empty tuple if not discrete action space
                 for i in range(action_counts.shape[0]):
-                    py_metrics[f"action_counts/{i}"] = int(action_counts[i])
+                    metrics[f"action_counts/{i}"] = int(action_counts[i])
 
             for k, v in cycle_result.metrics.items():
                 assert v.shape == (), f"Expected scalar metric {k} to be scalar, got {v.shape}"
-                py_metrics[k] = v.item()
+                metrics[k] = v.item()
 
             for k, v in cycle_metrics.items():
                 if isinstance(v, jax.Array):
                     v = v.item()
-                py_metrics[k] = v
+                metrics[k] = v
 
-            for k, v in py_metrics.items():
-                if isinstance(v, Image):
-                    continue
-                all_metrics[k].append(v)
+            self._logger.write(metrics)
 
-            if logger:
-                logger.write(py_metrics)
+            all_metrics.append(metrics)
 
         result = Result(
             agent_state=agent_state,
@@ -334,7 +317,14 @@ class GymnaxLoop:
             env_step=env_step,
             step_num=step_num_metric_start + num_cycles * steps_per_cycle,
         )
-        return result, all_metrics
+
+        # Transpose and filter list[dict[str, Any]] to dict[str, list[int | float]].
+        flat_metrics = {
+            k: list(m[k] for m in all_metrics)
+            for k in set(k for m in all_metrics for k in m if isinstance(m[k], int | float))
+        }
+
+        return result, flat_metrics
 
     def _run_cycle_and_update(
         self,
@@ -525,7 +515,8 @@ class GymnaxLoop:
         metrics[MetricKey.COMPLETE_EPISODE_LENGTH_MEAN] = jnp.mean(complete_episode_length_mean)
         metrics[MetricKey.NUM_ENVS_THAT_DID_NOT_COMPLETE] = jnp.sum(final_carry.complete_episode_count == 0)
         metrics[MetricKey.TOTAL_DONES] = final_carry.total_dones
-        metrics[MetricKey.TOTAL_REWARD] = final_carry.total_reward
+        metrics[MetricKey.REWARD_SUM] = final_carry.total_reward
+        metrics[MetricKey.REWARD_MEAN] = final_carry.total_reward / self._num_envs
         metrics[MetricKey.ACTION_COUNTS] = final_carry.action_counts
 
         # Somewhat arbitrary, but flashbax expects (num_envs, num_steps, ...)

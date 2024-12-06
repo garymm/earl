@@ -105,7 +105,7 @@ def _config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
 
 def _new_checkpoint_manager(directory: str | pathlib.Path, opts: ocp.CheckpointManagerOptions) -> ocp.CheckpointManager:
     if opts.best_fn is None:
-        opts.best_fn = lambda metrics: metrics[MetricKey.REWARD_MEAN_SMOOTH]
+        opts.best_fn = lambda metrics: metrics[MetricKey.REWARD_MEAN]
     return ocp.CheckpointManager(directory, options=opts)
 
 

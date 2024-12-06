@@ -186,10 +186,10 @@ def test_checkpointing(tmp_path):
 
     # Restore from best
     best_reward, best_step = -float("inf"), None
-    # If no best_fn is specified, the best step is the one with the highest reward_mean_smooth.
-    reward_mean_smooth = experiment.train_logger.metrics[MetricKey.REWARD_MEAN_SMOOTH]
+    # If no best_fn is specified, the best step is the one with the highest reward_mean.
+    reward_mean = experiment.train_logger.metrics[MetricKey.REWARD_MEAN]
     step_nums = experiment.train_logger.metrics[MetricKey.STEP_NUM]
-    for r, step_num in zip(reward_mean_smooth, step_nums, strict=False):
+    for r, step_num in zip(reward_mean, step_nums, strict=False):
         # Orbax seems to use the latest one when there is a tie.
         if r >= best_reward:
             best_reward = r
