@@ -1,8 +1,11 @@
 import os
 import shutil
 
+import chex
 import gymnax
 import gymnax.environments.spaces
+import jax
+import jax.numpy as jnp
 import orbax.checkpoint as ocp
 import pytest
 from gymnax import EnvParams
@@ -10,7 +13,7 @@ from gymnax.environments.environment import Environment
 from jaxtyping import PyTree
 
 from research.earl.agents.uniform_random_agent import UniformRandom
-from research.earl.core import Agent
+from research.earl.core import Agent, Image, Metrics
 from research.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, Phase
 from research.earl.experiments.run_experiment import _new_checkpoint_manager, _restore_checkpoint, run_experiment
 from research.earl.logging.base import AppendMetricLogger, MetricLogger
@@ -217,3 +220,27 @@ def test_error_on_restore_only_no_training():
             num_envs=1,
             steps_per_cycle=2,
         )
+
+
+def test_metric_serialization():
+    path = ocp.test_utils.erase_and_create_empty("/tmp/my-checkpoints/")
+
+    metrics: Metrics = {
+        "int": 1,
+        "float": 3.14,
+        "float16[]": jnp.array([3.14, 6.9], dtype=jnp.float16),
+        "imagergb8[]": Image(
+            jnp.array(
+                [
+                    [[0, 0, 0], [255, 255, 255]],
+                ],
+                dtype=jnp.uint8,
+            )
+        ),
+    }
+
+    metrics_shape = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, metrics)
+    checkpointer = ocp.StandardCheckpointer()
+    checkpointer.save(path / "checkpoint_name", metrics)
+    restored_metrics = checkpointer.restore(path / "checkpoint_name/", metrics_shape, strict=True)
+    chex.assert_trees_all_equal(restored_metrics, metrics, strict=True)
