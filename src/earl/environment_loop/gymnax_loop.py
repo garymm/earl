@@ -181,7 +181,7 @@ class GymnaxLoop:
         self._agent = agent
         self._num_envs = num_envs
         self._key = key
-        self._logger = logger or NoOpMetricLogger()
+        self._logger: MetricLogger = logger or NoOpMetricLogger()
         self._observe_cycle = observe_cycle or _noop_observe_cycle
         self._inference = inference
         _run_cycle_and_update = partial(self._run_cycle_and_update)
@@ -214,7 +214,7 @@ class GymnaxLoop:
         num_cycles: int,
         steps_per_cycle: int,
         print_progress: bool = True,
-    ) -> tuple[Result[_Networks, _OptState, _ExperienceState, _StepState], Mapping[str, list[int | float]]]:
+    ) -> Result[_Networks, _OptState, _ExperienceState, _StepState]:
         """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
         Args:
@@ -246,8 +246,6 @@ class GymnaxLoop:
             state = State(state)
 
         agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference)
-
-        all_metrics = []
 
         if state.env_state is None:
             assert state.env_step is None
@@ -309,22 +307,7 @@ class GymnaxLoop:
 
             self._logger.write(metrics)
 
-            all_metrics.append(metrics)
-
-        result = Result(
-            agent_state=agent_state,
-            env_state=env_state,
-            env_step=env_step,
-            step_num=step_num_metric_start + num_cycles * steps_per_cycle,
-        )
-
-        # Transpose and filter list[dict[str, Any]] to dict[str, list[int | float]].
-        flat_metrics = {
-            k: list(m[k] for m in all_metrics)
-            for k in set(k for m in all_metrics for k in m if isinstance(m[k], int | float))
-        }
-
-        return result, flat_metrics
+        return Result(agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle)
 
     def _run_cycle_and_update(
         self,

@@ -1,18 +1,19 @@
 import dataclasses
 import pathlib
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Optional
 
 import equinox as eqx
 import jax
 import orbax.checkpoint as ocp
 from gymnax import EnvParams
 
-from research.earl.core import Agent, env_info_from_gymnax
+from research.earl.core import Agent, Metrics, env_info_from_gymnax
 from research.earl.environment_loop.gymnax_loop import GymnaxLoop
 from research.earl.environment_loop.gymnax_loop import Result as LoopResult
 from research.earl.environment_loop.gymnax_loop import State as LoopState
 from research.earl.experiments.config import CheckpointRestoreMode, ExperimentConfig, Phase
+from research.earl.logging._keep_last_logger import KeepLastLogger
 from research.earl.logging.metric_key import MetricKey
 
 
@@ -58,7 +59,7 @@ def _restore_checkpoint(
     agent: Agent,
     env_params: EnvParams,
     state: LoopResult,
-) -> tuple[Agent, EnvParams, LoopResult]:
+) -> tuple[Agent, EnvParams, LoopResult, Optional[Metrics]]:
     step_num_to_restore = _step_num_to_restore(checkpoint_manager, restore_from_checkpoint)
     agent_arrays, agent_non_arrays = eqx.partition(state.agent_state, eqx.is_array)
     agent_callable, agent_non_callable = eqx.partition(agent, lambda x: isinstance(x, Callable))
@@ -73,6 +74,7 @@ def _restore_checkpoint(
         env_step=ocp.args.StandardRestore(state.env_step),  # type: ignore[call-arg]
     )
     restored = checkpoint_manager.restore(step_num_to_restore, args=args)
+    metrics = checkpoint_manager.metrics(step_num_to_restore)
     agent_state = eqx.combine(restored["agent_state_arrays"], restored["agent_state_non_arrays"])
     env_state = eqx.combine(restored["env_state_arrays"], restored["env_state_non_arrays"])
     agent = eqx.combine(agent_callable, restored["agent"])
@@ -85,6 +87,7 @@ def _restore_checkpoint(
             env_step=restored["env_step"],
             step_num=step_num_to_restore,
         ),
+        metrics,
     )
 
 
@@ -117,7 +120,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     env = config.new_env()
     env_params = config.env
     networks = config.new_networks()
-    train_logger = config.new_metric_logger(Phase.TRAIN)
+    train_logger = KeepLastLogger(config.new_metric_logger(Phase.TRAIN))
     train_observe_cycle = config.new_observe_cycle(Phase.TRAIN)
     train_key, key = jax.random.split(key)
     checkpoint_manager = None
@@ -150,9 +153,11 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
         if config.checkpoint.restore_from_checkpoint is not None:
             env_state, env_step = train_loop.reset_env()
             train_loop_state = LoopResult(train_loop_state.agent_state, env_state, env_step)
-            agent, env_params, train_loop_state = _restore_checkpoint(
+            agent, env_params, train_loop_state, metrics = _restore_checkpoint(
                 checkpoint_manager, config.checkpoint.restore_from_checkpoint, agent, env_params, train_loop_state
             )
+            # Restore last metrics.
+            train_logger.last_metrics = metrics
         if not config.num_train_cycles:
             checkpoint_manager = None  # disable checkpointing
 
@@ -177,19 +182,18 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
 
     for _ in range(config.num_eval_cycles or 1):
         if train_cycles_per_eval:
-            train_loop_state, metrics = train_loop.run(train_loop_state, train_cycles_per_eval, config.steps_per_cycle)
+            train_loop_state = train_loop.run(train_loop_state, train_cycles_per_eval, config.steps_per_cycle)
             if checkpoint_manager:
-                final_cycle_metrics = {k: v[-1] for k, v in metrics.items()}
                 checkpoint_manager.save(
                     train_loop_state.step_num,
-                    metrics=final_cycle_metrics,
+                    metrics=train_logger.last_metrics,
                     args=_checkpoint_save_args(agent, env_params, train_loop_state),
                 )
         if eval_loop:
             eval_new_state_key, key = jax.random.split(key)
             eval_agent_state = agent.new_state(train_loop_state.agent_state.nets, env_info, eval_new_state_key)
             eval_loop_state = LoopState(eval_agent_state, step_num=train_loop_state.step_num)
-            eval_loop_state, _ = eval_loop.run(eval_loop_state, 1, config.steps_per_cycle)
+            eval_loop_state = eval_loop.run(eval_loop_state, 1, config.steps_per_cycle)
             # we don't expect nets to be modified, but the memory is donated to loop.run,
             # so we need to move it back into train_agent_state.
             train_loop_state = dataclasses.replace(

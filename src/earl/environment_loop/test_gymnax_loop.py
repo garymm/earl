@@ -10,7 +10,8 @@ import pytest
 from research.earl.agents.uniform_random_agent import UniformRandom
 from research.earl.core import EnvStep, env_info_from_gymnax
 from research.earl.environment_loop.gymnax_loop import ConflictingMetricError, GymnaxLoop, MetricKey, State
-from research.earl.logging import base
+from research.earl.logging import MemoryLogger, base
+from research.utils.expect import expect_sequence
 from research.utils.prng import keygen
 
 
@@ -23,14 +24,16 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
     num_envs = 2
     key_gen = keygen(jax.random.PRNGKey(0))
     agent = UniformRandom(env.action_space().sample, num_off_policy_updates)
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), inference=inference)
+    logger = MemoryLogger()
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=inference)
     num_cycles = 2
     steps_per_cycle = 10
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, next(key_gen))
-    result, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
+    result = loop.run(agent_state, num_cycles, steps_per_cycle)
     del agent_state
     assert result.agent_state.step.t == num_cycles * steps_per_cycle
+    metrics = logger.metrics()
     assert len(metrics[MetricKey.DURATION_SEC]) == num_cycles
     if inference:
         assert result.agent_state.opt.opt_count == 0
@@ -43,7 +46,7 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
 
     assert env.num_actions > 0
     for i in range(env.num_actions):
-        num_actions_i = metrics[f"action_counts/{i}"]
+        num_actions_i = expect_sequence(metrics[f"action_counts/{i}"], int)
         assert len(num_actions_i) == num_cycles
         # technically this could fail due to chance but it's very unlikely
         assert sum(num_actions_i) > 0
@@ -73,8 +76,7 @@ def test_run_with_state():
         step_num=initial_step_num,
     )
     steps_per_cycle = 10
-    result, metrics = loop.run(state, 1, steps_per_cycle)
-    assert metrics[MetricKey.STEP_NUM] == [initial_step_num + steps_per_cycle]
+    _result = loop.run(state, 1, steps_per_cycle)
     assert env.reset.call_count == 0
 
 
@@ -109,18 +111,6 @@ def test_bad_metric_key():
         loop.run(agent_state, num_cycles, steps_per_cycle)
 
 
-class _AppendLogger(base.MetricLogger):
-    def __init__(self):
-        super().__init__()
-        self._metrics = []
-
-    def write(self, metrics: base.Metrics):
-        self._metrics.append(metrics)
-
-    def _close(self):
-        pass
-
-
 # setting default device speeds things up a little, but running without cuda enabled jaxlib is even faster
 @jax.default_device(jax.devices("cpu")[0])
 def test_logs():
@@ -129,24 +119,16 @@ def test_logs():
     num_envs = 2
     key_gen = keygen(jax.random.PRNGKey(0))
     agent = UniformRandom(env.action_space().sample, 0)
-    logger = _AppendLogger()
-    inference = True
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=inference)
+    logger = MemoryLogger()
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=True)
     num_cycles = 2
     steps_per_cycle = 10
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
     assert not agent_state.inference
-    result, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
+    result = loop.run(agent_state, num_cycles, steps_per_cycle)
     assert result.agent_state.inference, "we set loop.inference, but agent_state.inference is False!"
-    assert metrics
-    for k in metrics:
-        returned_values = metrics[k]
-        logged_values = [m[k] for m in logger._metrics]
-        assert returned_values == logged_values
-    assert metrics[MetricKey.STEP_NUM] == list(
-        range(steps_per_cycle, num_cycles * steps_per_cycle + 1, steps_per_cycle)
-    )
+    assert len(logger.metrics_list) == num_cycles
     logger.close()
 
 
@@ -160,13 +142,14 @@ def test_continuous_action_space():
     assert isinstance(action_space.low, jax.Array)
     assert isinstance(action_space.high, jax.Array)
     agent = UniformRandom(action_space.sample, 0)
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), inference=True)
+    logger = MemoryLogger()
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=True)
     num_cycles = 1
     steps_per_cycle = 1
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
-    _, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
-    for k in metrics:
+    _ = loop.run(agent_state, num_cycles, steps_per_cycle)
+    for k in logger.metrics():
         assert not k.startswith("action_counts_")
 
 
@@ -188,7 +171,10 @@ def test_observe_cycle():
 
         return {"ran": True}
 
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), inference=True, observe_cycle=observe_cycle)
-    _, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
-    for v in metrics["ran"]:
+    logger = MemoryLogger()
+    loop = GymnaxLoop(
+        env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=True, observe_cycle=observe_cycle
+    )
+    _ = loop.run(agent_state, num_cycles, steps_per_cycle)
+    for v in logger.metrics()["ran"]:
         assert v

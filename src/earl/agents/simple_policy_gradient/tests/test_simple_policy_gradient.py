@@ -6,6 +6,7 @@ from gymnax.environments import CartPole
 from research.earl.agents import simple_policy_gradient
 from research.earl.core import env_info_from_gymnax
 from research.earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
+from research.earl.logging import MemoryLogger
 
 
 def test_learns_cart_pole():
@@ -21,11 +22,13 @@ def test_learns_cart_pole():
     nets_key, loop_key, agent_key = jax.random.split(jax.random.PRNGKey(0), 3)
 
     networks = simple_policy_gradient.make_networks([input_shape, 32, env.num_actions], nets_key)
-    loop = GymnaxLoop(env, env.default_params, agent, num_envs, loop_key)
+    logger = MemoryLogger()
+    loop = GymnaxLoop(env, env.default_params, agent, num_envs, loop_key, logger=logger)
     env_info = env_info_from_gymnax(env, env.default_params, num_envs)
     agent_state = agent.new_state(networks, env_info, agent_key)
-    agent_state, metrics = loop.run(agent_state, num_cycles, steps_per_cycle)
+    agent_state = loop.run(agent_state, num_cycles, steps_per_cycle)
     assert agent_state
+    metrics = logger.metrics()
     assert len(metrics[MetricKey.COMPLETE_EPISODE_LENGTH_MEAN]) == num_cycles
     episode_length_arr = np.array(metrics[MetricKey.COMPLETE_EPISODE_LENGTH_MEAN])
     # Due to auto-resets, the reward is always constant, but it's a survival task
