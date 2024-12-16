@@ -18,4 +18,3 @@ class MetricKey(enum.StrEnum):
     """Sum of the number of times envs reported being done."""
     COMPLETE_EPISODE_LENGTH_MEAN = enum.auto()
     NUM_ENVS_THAT_DID_NOT_COMPLETE = enum.auto()
-    STEP_NUM = enum.auto()

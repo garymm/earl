@@ -6,12 +6,12 @@ import gymnax.environments.spaces
 import jax
 import jax.numpy as jnp
 import pytest
+from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
 from research.earl.agents.uniform_random_agent import UniformRandom
 from research.earl.core import EnvStep, env_info_from_gymnax
 from research.earl.environment_loop.gymnax_loop import ConflictingMetricError, GymnaxLoop, MetricKey, State
-from research.earl.logging import MemoryLogger, base
-from research.utils.expect import expect_sequence
+from research.earl.logging import base
 from research.utils.prng import keygen
 
 
@@ -24,8 +24,8 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
     num_envs = 2
     key_gen = keygen(jax.random.PRNGKey(0))
     agent = UniformRandom(env.action_space().sample, num_off_policy_updates)
-    logger = MemoryLogger()
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=inference)
+    metric_writer = MemoryWriter()
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=inference)
     num_cycles = 2
     steps_per_cycle = 10
     env_info = env_info_from_gymnax(env, env_params, num_envs)
@@ -33,23 +33,35 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
     result = loop.run(agent_state, num_cycles, steps_per_cycle)
     del agent_state
     assert result.agent_state.step.t == num_cycles * steps_per_cycle
-    metrics = logger.metrics()
-    assert len(metrics[MetricKey.DURATION_SEC]) == num_cycles
+    metrics = metric_writer.scalars
+    assert len(metrics) == num_cycles
+    first_step_num, last_step_num = None, None
+    for step_num, metrics_for_step in metrics.items():
+        if first_step_num is None:
+            first_step_num = step_num
+        last_step_num = step_num
+        assert MetricKey.DURATION_SEC in metrics_for_step
+        assert MetricKey.REWARD_SUM in metrics_for_step
+        assert MetricKey.REWARD_MEAN in metrics_for_step
+        assert MetricKey.TOTAL_DONES in metrics_for_step
+        action_count_sum = 0
+        for i in range(env.num_actions):
+            action_count_i = metrics_for_step[f"action_counts/{i}"]
+            action_count_sum += action_count_i
+        assert action_count_sum > 0
+        if not inference:
+            assert MetricKey.LOSS in metrics_for_step
+            assert agent._prng_metric_key in metrics_for_step
     if inference:
         assert result.agent_state.opt.opt_count == 0
     else:
-        assert len(metrics[MetricKey.LOSS]) == num_cycles
-        assert len(metrics[agent._prng_metric_key]) == num_cycles
-        assert metrics[agent._prng_metric_key][0] != metrics[agent._prng_metric_key][1]
+        assert first_step_num is not None
+        assert last_step_num is not None
+        assert metrics[first_step_num][agent._prng_metric_key] != metrics[last_step_num][agent._prng_metric_key]
         expected_opt_count = num_cycles * (num_off_policy_updates or 1)
         assert result.agent_state.opt.opt_count == expected_opt_count
 
     assert env.num_actions > 0
-    for i in range(env.num_actions):
-        num_actions_i = expect_sequence(metrics[f"action_counts/{i}"], int)
-        assert len(num_actions_i) == num_cycles
-        # technically this could fail due to chance but it's very unlikely
-        assert sum(num_actions_i) > 0
 
 
 def test_run_with_state():
@@ -111,27 +123,6 @@ def test_bad_metric_key():
         loop.run(agent_state, num_cycles, steps_per_cycle)
 
 
-# setting default device speeds things up a little, but running without cuda enabled jaxlib is even faster
-@jax.default_device(jax.devices("cpu")[0])
-def test_logs():
-    env, env_params = gymnax.make("CartPole-v1")
-    networks = None
-    num_envs = 2
-    key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env.action_space().sample, 0)
-    logger = MemoryLogger()
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=True)
-    num_cycles = 2
-    steps_per_cycle = 10
-    env_info = env_info_from_gymnax(env, env_params, num_envs)
-    agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
-    assert not agent_state.inference
-    result = loop.run(agent_state, num_cycles, steps_per_cycle)
-    assert result.agent_state.inference, "we set loop.inference, but agent_state.inference is False!"
-    assert len(logger.metrics_list) == num_cycles
-    logger.close()
-
-
 def test_continuous_action_space():
     env, env_params = gymnax.make("Swimmer-misc")
     networks = None
@@ -142,15 +133,16 @@ def test_continuous_action_space():
     assert isinstance(action_space.low, jax.Array)
     assert isinstance(action_space.high, jax.Array)
     agent = UniformRandom(action_space.sample, 0)
-    logger = MemoryLogger()
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=True)
+    metric_writer = MemoryWriter()
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=True)
     num_cycles = 1
     steps_per_cycle = 1
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
     _ = loop.run(agent_state, num_cycles, steps_per_cycle)
-    for k in logger.metrics():
-        assert not k.startswith("action_counts_")
+    for _, v in metric_writer.scalars.items():
+        for k in v:
+            assert not k.startswith("action_counts_")
 
 
 def test_observe_cycle():
@@ -171,10 +163,17 @@ def test_observe_cycle():
 
         return {"ran": True}
 
-    logger = MemoryLogger()
+    metric_writer = MemoryWriter()
     loop = GymnaxLoop(
-        env, env_params, agent, num_envs, next(key_gen), logger=logger, inference=True, observe_cycle=observe_cycle
+        env,
+        env_params,
+        agent,
+        num_envs,
+        next(key_gen),
+        metric_writer=metric_writer,
+        inference=True,
+        observe_cycle=observe_cycle,
     )
     _ = loop.run(agent_state, num_cycles, steps_per_cycle)
-    for v in logger.metrics()["ran"]:
-        assert v
+    for _, v in metric_writer.scalars.items():
+        assert v.get("ran", False)

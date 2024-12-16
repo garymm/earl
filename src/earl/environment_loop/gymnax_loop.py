@@ -11,6 +11,9 @@ import jax.numpy as jnp
 from gymnax import EnvState
 from gymnax.environments.environment import Environment as GymnaxEnvironment
 from gymnax.environments.spaces import Discrete
+from jax_loop_utils.metric_writers.interface import MetricWriter
+from jax_loop_utils.metric_writers.interface import Scalar as ScalarMetric
+from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
@@ -18,13 +21,13 @@ from research.earl.core import (
     Agent,
     AgentState,
     EnvStep,
-    Metrics,
+    Image,
     _ExperienceState,
     _Networks,
     _OptState,
     _StepState,
 )
-from research.earl.logging.base import ArrayMetrics, CycleResult, MetricLogger, NoOpMetricLogger, ObserveCycle
+from research.earl.logging.base import ArrayMetrics, CycleResult, ObserveCycle
 from research.earl.logging.metric_key import MetricKey
 from research.utils.eqx_filter import filter_scan  # TODO: remove deps on research
 
@@ -149,7 +152,7 @@ class GymnaxLoop:
         agent: Agent,
         num_envs: int,
         key: PRNGKeyArray,
-        logger: MetricLogger | None = None,
+        metric_writer: MetricWriter | None = None,
         observe_cycle: ObserveCycle | None = None,
         inference: bool = False,
         assert_no_recompile: bool = True,
@@ -165,7 +168,7 @@ class GymnaxLoop:
               If zero and training is True, there will be 1 on-policy update per cycle.
             key: The PRNG key. Must not be shared with the agent state, as this will cause jax buffer donation
                 errors.
-            logger: The logger to write metrics to.
+            metric_writer: The metric writer to write metrics to.
             observe_cycle: A function that takes a CycleResult representing a final environment state and a trajectory
                 of length steps_per_cycle and runs any custom logic on it.
             inference: If False, agent.update_for_cycle() will not be called.
@@ -181,7 +184,7 @@ class GymnaxLoop:
         self._agent = agent
         self._num_envs = num_envs
         self._key = key
-        self._logger: MetricLogger = logger or NoOpMetricLogger()
+        self._metric_writer: MetricWriter = metric_writer or NoOpWriter()
         self._observe_cycle = observe_cycle or _noop_observe_cycle
         self._inference = inference
         _run_cycle_and_update = partial(self._run_cycle_and_update)
@@ -273,10 +276,10 @@ class GymnaxLoop:
             )
             cycle_result = self._run_cycle_and_update(agent_state, env_state, env_step, self._key, steps_per_cycle)
 
-            cycle_metrics = self._observe_cycle(cycle_result)
+            observe_cycle_metrics = self._observe_cycle(cycle_result)
             # Could potentially be very slow if there are lots
             # of metrics to compare
-            _raise_if_metric_conflicts(cycle_metrics)
+            _raise_if_metric_conflicts(observe_cycle_metrics)
 
             agent_state, env_state, env_step, self._key = (
                 cycle_result.agent_state,
@@ -285,27 +288,33 @@ class GymnaxLoop:
                 cycle_result.key,
             )
 
-            # convert arrays to python types
-            metrics: Metrics = {}
-            metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
-            metrics[MetricKey.STEP_NUM] = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
+            image_metrics: dict[str, jax.Array] = {}
+            scalar_metrics: dict[str, float | int] = {}
+            scalar_metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
 
             action_counts = cycle_result.metrics.pop(MetricKey.ACTION_COUNTS)
             assert isinstance(action_counts, jax.Array)
             if action_counts.shape:  # will be empty tuple if not discrete action space
                 for i in range(action_counts.shape[0]):
-                    metrics[f"action_counts/{i}"] = int(action_counts[i])
+                    scalar_metrics[f"action_counts/{i}"] = int(action_counts[i])
 
             for k, v in cycle_result.metrics.items():
                 assert v.shape == (), f"Expected scalar metric {k} to be scalar, got {v.shape}"
-                metrics[k] = v.item()
+                scalar_metrics[k] = v.item()
 
-            for k, v in cycle_metrics.items():
-                if isinstance(v, jax.Array):
-                    v = v.item()
-                metrics[k] = v
+            for k, v in observe_cycle_metrics.items():
+                if isinstance(v, ScalarMetric):
+                    if isinstance(v, jax.Array):
+                        v = v.item()
+                    scalar_metrics[k] = v
+                elif isinstance(v, Image):
+                    image_metrics[k] = v.data
+                else:
+                    raise ValueError(f"Unknown metric type: {type(v)}")
 
-            self._logger.write(metrics)
+            step_num = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
+            self._metric_writer.write_scalars(step_num, scalar_metrics)
+            self._metric_writer.write_images(step_num, image_metrics)
 
         return Result(agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle)
 

@@ -6,10 +6,12 @@ from dataclasses import dataclass
 import orbax.checkpoint as ocp
 from gymnax import EnvParams
 from gymnax.environments.environment import Environment
+from jax_loop_utils.metric_writers.interface import MetricWriter
+from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 from jaxtyping import PyTree
 
 from research.earl.core import Agent
-from research.earl.logging.base import ConfigLogger, MetricLogger, NoOpConfigLogger, NoOpMetricLogger, ObserveCycle
+from research.earl.logging.base import ObserveCycle
 
 
 class CheckpointRestoreMode(enum.StrEnum):
@@ -70,11 +72,8 @@ class ExperimentConfig(abc.ABC):
     def new_observe_cycle(self, phase: Phase) -> ObserveCycle | None:
         return None
 
-    def new_config_logger(self) -> ConfigLogger:
-        return NoOpConfigLogger()
-
-    def new_metric_logger(self, phase: Phase) -> MetricLogger:
-        return NoOpMetricLogger()
+    def new_metric_writer(self, phase: Phase) -> MetricWriter:
+        return NoOpWriter()
 
     env: EnvParams
     num_eval_cycles: int

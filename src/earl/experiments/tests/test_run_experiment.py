@@ -10,16 +10,15 @@ import orbax.checkpoint as ocp
 import pytest
 from gymnax import EnvParams
 from gymnax.environments.environment import Environment
+from jax_loop_utils.metric_writers.interface import MetricWriter
+from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 from jaxtyping import PyTree
 
 from research.earl.agents.uniform_random_agent import UniformRandom
 from research.earl.core import Agent, Image, Metrics
 from research.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, Phase
 from research.earl.experiments.run_experiment import _new_checkpoint_manager, _restore_checkpoint, run_experiment
-from research.earl.logging import MemoryLogger
-from research.earl.logging.base import MetricLogger
 from research.earl.logging.metric_key import MetricKey
-from research.utils.expect import expect_sequence
 
 
 class FakeExperimentConfig(ExperimentConfig):
@@ -28,8 +27,8 @@ class FakeExperimentConfig(ExperimentConfig):
         self._env_obj = env_obj
         self._agent_obj = agent_obj
 
-        self.train_logger = MemoryLogger()
-        self.eval_logger = MemoryLogger()
+        self.train_writer = MemoryWriter()
+        self.eval_writer = MemoryWriter()
 
     def new_agent(self) -> Agent:
         return self._agent_obj
@@ -40,9 +39,9 @@ class FakeExperimentConfig(ExperimentConfig):
     def new_networks(self) -> PyTree:
         return None
 
-    def new_metric_logger(self, phase: Phase) -> MetricLogger:
-        assert ExperimentConfig.new_metric_logger(self, phase)  # just for test coverage
-        return {"train": self.train_logger, "eval": self.eval_logger}[phase]
+    def new_metric_writer(self, phase: Phase) -> MetricWriter:
+        assert ExperimentConfig.new_metric_writer(self, phase)  # just for test coverage
+        return {"train": self.train_writer, "eval": self.eval_writer}[phase]
 
 
 def test_run_experiment_num_train_cycles_not_divisible():
@@ -77,26 +76,23 @@ def test_run_experiment_no_eval_cycles(num_eval_cycles: int):
     _ = run_experiment(experiment)
 
     # Verify train metrics
-    train_metrics = experiment.train_logger.metrics()
-    for _, val in train_metrics.items():
-        assert len(val) == experiment.num_train_cycles
+    train_metrics = experiment.train_writer.scalars
+    assert len(train_metrics) == experiment.num_train_cycles
 
     # Check that step numbers increase by steps_per_cycle
-    step_nums = train_metrics[MetricKey.STEP_NUM]
+    step_nums = sorted(train_metrics.keys())
     assert all(step_nums[i] == (i + 1) * experiment.steps_per_cycle for i in range(len(step_nums)))
 
     if not num_eval_cycles:
-        assert not experiment.eval_logger.metrics()
+        assert not experiment.eval_writer.scalars
     else:
         # Verify eval metrics
-        eval_metrics = experiment.eval_logger.metrics()
-        for _, val in eval_metrics.items():
-            assert len(val) == experiment.num_eval_cycles
+        eval_metrics = experiment.eval_writer.scalars
+        assert len(eval_metrics) == experiment.num_eval_cycles
 
         # Check that eval happens at the right steps
         steps_between_evals = experiment.num_train_cycles // experiment.num_eval_cycles * experiment.steps_per_cycle
-
-        step_nums = eval_metrics[MetricKey.STEP_NUM]
+        step_nums = sorted(eval_metrics.keys())
         assert all(
             step_nums[i] == (i + 1) * steps_between_evals + experiment.steps_per_cycle for i in range(len(step_nums))
         )
@@ -154,60 +150,61 @@ def test_checkpointing(tmp_path):
 
     experiment = create_experiment(checkpoints_dir, num_eval_cycles=0)
     run_experiment(experiment)
-    train_metrics = experiment.train_logger.metrics()
+    train_metrics = experiment.train_writer.scalars
 
     checkpoint_dirs = os.listdir(checkpoints_dir)
     assert len(checkpoint_dirs) == 1  # when no eval cycles, just one checkpoint at the end
     expected_step_num = experiment.num_train_cycles * experiment.steps_per_cycle
     assert max(int(d) for d in checkpoint_dirs) == expected_step_num
-    assert train_metrics[MetricKey.STEP_NUM][-1] == expected_step_num
+    step_nums = sorted(train_metrics.keys())
+    assert step_nums[-1] == expected_step_num
 
     # reset
     shutil.rmtree(checkpoints_dir)
 
     experiment = create_experiment(checkpoints_dir, num_eval_cycles=2)
     run_experiment(experiment)
-    train_metrics = experiment.train_logger.metrics()
+    train_metrics = experiment.train_writer.scalars
 
     checkpoint_dirs = os.listdir(checkpoints_dir)
     assert len(checkpoint_dirs) == experiment.num_eval_cycles
     expected_step_num = experiment.num_train_cycles * experiment.steps_per_cycle
     assert max(int(d) for d in checkpoint_dirs) == expected_step_num
-    assert train_metrics[MetricKey.STEP_NUM][-1] == expected_step_num
+    step_nums = sorted(train_metrics.keys())
+    assert step_nums[-1] == expected_step_num
 
     # Restore from latest
     experiment = create_experiment(
         checkpoints_dir, num_eval_cycles=2, restore_from_checkpoint=CheckpointRestoreMode.LATEST
     )
     loop_state = run_experiment(experiment)
-    train_metrics = experiment.train_logger.metrics()
+    train_metrics = experiment.train_writer.scalars
 
     checkpoint_dirs = os.listdir(checkpoints_dir)
     assert experiment.checkpoint
     assert len(checkpoint_dirs) == experiment.checkpoint.manager_options.max_to_keep
     expected_step_num = 2 * experiment.num_train_cycles * experiment.steps_per_cycle
     assert max(int(d) for d in checkpoint_dirs) == expected_step_num
-    assert train_metrics[MetricKey.STEP_NUM][-1] == expected_step_num
+    step_nums = sorted(train_metrics.keys())
+    assert step_nums[-1] == expected_step_num
 
     # Restore from best
     best_reward, best_step = -float("inf"), None
     # If no best_fn is specified, the best step is the one with the highest reward_mean.
-    reward_mean = expect_sequence(train_metrics[MetricKey.REWARD_MEAN], float)
-    step_nums = expect_sequence(train_metrics[MetricKey.STEP_NUM], int)
-    for r, step_num in zip(reward_mean, step_nums, strict=False):
+    for step_num, step_metrics in train_metrics.items():
         # Orbax seems to use the latest one when there is a tie.
-        if r >= best_reward:
-            best_reward = r
+        if step_metrics[MetricKey.REWARD_MEAN] >= best_reward:
+            best_reward = step_metrics[MetricKey.REWARD_MEAN]
             best_step = step_num
     checkpoint_manager = _new_checkpoint_manager(checkpoints_dir, experiment.checkpoint.manager_options)
-    _, _, restored_loop_state, _ = _restore_checkpoint(
+    _, _, restored_loop_state = _restore_checkpoint(
         checkpoint_manager, CheckpointRestoreMode.BEST, experiment._agent_obj, experiment.env, loop_state
     )
     assert restored_loop_state.step_num == best_step
 
     # Restore from step
     step_to_restore = int(checkpoint_dirs[-2])
-    _, _, restored_loop_state, _ = _restore_checkpoint(
+    _, _, restored_loop_state = _restore_checkpoint(
         checkpoint_manager, step_to_restore, experiment._agent_obj, experiment.env, loop_state
     )
     assert restored_loop_state.step_num == step_to_restore

@@ -1,19 +1,19 @@
 import dataclasses
 import pathlib
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 import equinox as eqx
 import jax
 import orbax.checkpoint as ocp
 from gymnax import EnvParams
+from jax_loop_utils.metric_writers import KeepLastWriter
 
-from research.earl.core import Agent, Metrics, env_info_from_gymnax
+from research.earl.core import Agent, env_info_from_gymnax
 from research.earl.environment_loop.gymnax_loop import GymnaxLoop
 from research.earl.environment_loop.gymnax_loop import Result as LoopResult
 from research.earl.environment_loop.gymnax_loop import State as LoopState
 from research.earl.experiments.config import CheckpointRestoreMode, ExperimentConfig, Phase
-from research.earl.logging._keep_last_logger import KeepLastLogger
 from research.earl.logging.metric_key import MetricKey
 
 
@@ -59,7 +59,7 @@ def _restore_checkpoint(
     agent: Agent,
     env_params: EnvParams,
     state: LoopResult,
-) -> tuple[Agent, EnvParams, LoopResult, Optional[Metrics]]:
+) -> tuple[Agent, EnvParams, LoopResult]:
     step_num_to_restore = _step_num_to_restore(checkpoint_manager, restore_from_checkpoint)
     agent_arrays, agent_non_arrays = eqx.partition(state.agent_state, eqx.is_array)
     agent_callable, agent_non_callable = eqx.partition(agent, lambda x: isinstance(x, Callable))
@@ -74,7 +74,6 @@ def _restore_checkpoint(
         env_step=ocp.args.StandardRestore(state.env_step),  # type: ignore[call-arg]
     )
     restored = checkpoint_manager.restore(step_num_to_restore, args=args)
-    metrics = checkpoint_manager.metrics(step_num_to_restore)
     agent_state = eqx.combine(restored["agent_state_arrays"], restored["agent_state_non_arrays"])
     env_state = eqx.combine(restored["env_state_arrays"], restored["env_state_non_arrays"])
     agent = eqx.combine(agent_callable, restored["agent"])
@@ -87,7 +86,6 @@ def _restore_checkpoint(
             env_step=restored["env_step"],
             step_num=step_num_to_restore,
         ),
-        metrics,
     )
 
 
@@ -120,7 +118,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     env = config.new_env()
     env_params = config.env
     networks = config.new_networks()
-    train_logger = KeepLastLogger(config.new_metric_logger(Phase.TRAIN))
+    train_metric_writer = KeepLastWriter(config.new_metric_writer(Phase.TRAIN))
     train_observe_cycle = config.new_observe_cycle(Phase.TRAIN)
     train_key, key = jax.random.split(key)
     checkpoint_manager = None
@@ -139,7 +137,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
             )["num_envs"]
             num_envs = int(num_envs)
     train_loop = GymnaxLoop(
-        env, env_params, agent, num_envs, key, logger=train_logger, observe_cycle=train_observe_cycle
+        env, env_params, agent, num_envs, key, metric_writer=train_metric_writer, observe_cycle=train_observe_cycle
     )
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     train_agent_state = agent.new_state(networks, env_info, train_key)
@@ -153,16 +151,14 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
         if config.checkpoint.restore_from_checkpoint is not None:
             env_state, env_step = train_loop.reset_env()
             train_loop_state = LoopResult(train_loop_state.agent_state, env_state, env_step)
-            agent, env_params, train_loop_state, metrics = _restore_checkpoint(
+            agent, env_params, train_loop_state = _restore_checkpoint(
                 checkpoint_manager, config.checkpoint.restore_from_checkpoint, agent, env_params, train_loop_state
             )
-            # Restore last metrics.
-            train_logger.last_metrics = metrics
         if not config.num_train_cycles:
             checkpoint_manager = None  # disable checkpointing
 
     config_dict = _config_to_dict(config)
-    config.new_config_logger().write(config_dict)
+    train_metric_writer.write_hparams(config_dict)
 
     train_cycles_per_eval = config.num_train_cycles
     eval_loop = None
@@ -175,7 +171,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
             agent,
             config.num_envs,
             eval_key,
-            logger=config.new_metric_logger(Phase.EVAL),
+            metric_writer=config.new_metric_writer(Phase.EVAL),
             observe_cycle=config.new_observe_cycle(Phase.EVAL),
             inference=True,
         )
@@ -186,7 +182,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
             if checkpoint_manager:
                 checkpoint_manager.save(
                     train_loop_state.step_num,
-                    metrics=train_logger.last_metrics,
+                    metrics=train_metric_writer.scalars,
                     args=_checkpoint_save_args(agent, env_params, train_loop_state),
                 )
         if eval_loop:
