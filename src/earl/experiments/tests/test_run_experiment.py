@@ -10,15 +10,14 @@ import orbax.checkpoint as ocp
 import pytest
 from gymnax import EnvParams
 from gymnax.environments.environment import Environment
-from jax_loop_utils.metric_writers.interface import MetricWriter
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 from jaxtyping import PyTree
 
 from research.earl.agents.uniform_random_agent import UniformRandom
 from research.earl.core import Agent, Image, Metrics
-from research.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, Phase
+from research.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, MetricWriters
 from research.earl.experiments.run_experiment import _new_checkpoint_manager, _restore_checkpoint, run_experiment
-from research.earl.logging.metric_key import MetricKey
+from research.earl.metric_key import MetricKey
 
 
 class FakeExperimentConfig(ExperimentConfig):
@@ -39,9 +38,9 @@ class FakeExperimentConfig(ExperimentConfig):
     def new_networks(self) -> PyTree:
         return None
 
-    def new_metric_writer(self, phase: Phase) -> MetricWriter:
-        assert ExperimentConfig.new_metric_writer(self, phase)  # just for test coverage
-        return {"train": self.train_writer, "eval": self.eval_writer}[phase]
+    def new_metric_writers(self) -> MetricWriters:
+        assert ExperimentConfig.new_metric_writers(self)  # just for test coverage
+        return MetricWriters(train=self.train_writer, eval=self.eval_writer)
 
 
 def test_run_experiment_num_train_cycles_not_divisible():

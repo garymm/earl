@@ -13,8 +13,8 @@ from research.earl.core import Agent, env_info_from_gymnax
 from research.earl.environment_loop.gymnax_loop import GymnaxLoop
 from research.earl.environment_loop.gymnax_loop import Result as LoopResult
 from research.earl.environment_loop.gymnax_loop import State as LoopState
-from research.earl.experiments.config import CheckpointRestoreMode, ExperimentConfig, Phase
-from research.earl.logging.metric_key import MetricKey
+from research.earl.experiments.config import CheckpointRestoreMode, ExperimentConfig
+from research.earl.metric_key import MetricKey
 
 
 def _checkpoint_save_args(agent: Agent, env_params: EnvParams, state: LoopResult) -> ocp.args.CheckpointArgs:
@@ -118,8 +118,10 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     env = config.new_env()
     env_params = config.env
     networks = config.new_networks()
-    train_metric_writer = KeepLastWriter(config.new_metric_writer(Phase.TRAIN))
-    train_observe_cycle = config.new_observe_cycle(Phase.TRAIN)
+    metric_writers = config.new_metric_writers()
+    train_metric_writer = KeepLastWriter(metric_writers.train)
+    observe_cycles = config.new_cycle_observers()
+    train_observe_cycle = observe_cycles.train
     train_key, key = jax.random.split(key)
     checkpoint_manager = None
     num_envs = config.num_envs
@@ -171,8 +173,8 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
             agent,
             config.num_envs,
             eval_key,
-            metric_writer=config.new_metric_writer(Phase.EVAL),
-            observe_cycle=config.new_observe_cycle(Phase.EVAL),
+            metric_writer=metric_writers.eval,
+            observe_cycle=observe_cycles.eval,
             inference=True,
         )
 

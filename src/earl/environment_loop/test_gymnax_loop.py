@@ -6,12 +6,13 @@ import gymnax.environments.spaces
 import jax
 import jax.numpy as jnp
 import pytest
-from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
+from jax_loop_utils.metric_writers import MemoryWriter
+from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 
 from research.earl.agents.uniform_random_agent import UniformRandom
-from research.earl.core import EnvStep, env_info_from_gymnax
+from research.earl.core import EnvStep, Metrics, env_info_from_gymnax
+from research.earl.environment_loop import CycleResult
 from research.earl.environment_loop.gymnax_loop import ConflictingMetricError, GymnaxLoop, MetricKey, State
-from research.earl.logging import base
 from research.utils.prng import keygen
 
 
@@ -71,7 +72,7 @@ def test_run_with_state():
     key_gen = keygen(jax.random.PRNGKey(0))
     agent = UniformRandom(env.action_space().sample, 1)
     env.reset = mock.Mock(spec=env.reset)
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen))
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter())
     agent_state = agent.new_state(None, env_info_from_gymnax(env, env_params, num_envs), jax.random.PRNGKey(0))
     initial_step_num = 2
     prev_action = jax.vmap(env.action_space(None).sample)(jax.random.split(jax.random.PRNGKey(0), num_envs))
@@ -96,7 +97,7 @@ def test_bad_args():
     num_envs = 2
     env, env_params = gymnax.make("CartPole-v1")
     agent = UniformRandom(env.action_space().sample, 0)
-    loop = GymnaxLoop(env, env_params, agent, num_envs, jax.random.PRNGKey(0))
+    loop = GymnaxLoop(env, env_params, agent, num_envs, jax.random.PRNGKey(0), metric_writer=NoOpWriter())
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
     with pytest.raises(ValueError, match="num_cycles"):
@@ -114,7 +115,7 @@ def test_bad_metric_key():
     agent = UniformRandom(env.action_space().sample, 0)
     agent = dataclasses.replace(agent, _prng_metric_key=MetricKey.DURATION_SEC)
 
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen))
+    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter())
     num_cycles = 1
     steps_per_cycle = 1
     env_info = env_info_from_gymnax(env, env_params, num_envs)
@@ -156,7 +157,7 @@ def test_observe_cycle():
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
 
-    def observe_cycle(cycle_result: base.CycleResult) -> base.Metrics:
+    def observe_cycle(cycle_result: CycleResult) -> Metrics:
         assert cycle_result.trajectory.obs.shape[0] == num_envs
         assert cycle_result.trajectory.obs.shape[1] == steps_per_cycle
         assert "discount" in cycle_result.step_infos

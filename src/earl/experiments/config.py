@@ -11,7 +11,7 @@ from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 from jaxtyping import PyTree
 
 from research.earl.core import Agent
-from research.earl.logging.base import ObserveCycle
+from research.earl.environment_loop import ObserveCycle, no_op_observe_cycle
 
 
 class CheckpointRestoreMode(enum.StrEnum):
@@ -46,9 +46,16 @@ Args:
 """
 
 
-class Phase(enum.StrEnum):
-    TRAIN = enum.auto()
-    EVAL = enum.auto()
+@dataclass
+class CycleObservers:
+    train: ObserveCycle = no_op_observe_cycle
+    eval: ObserveCycle = no_op_observe_cycle
+
+
+@dataclass
+class MetricWriters:
+    train: MetricWriter = NoOpWriter()
+    eval: MetricWriter = NoOpWriter()
 
 
 @dataclass
@@ -69,11 +76,11 @@ class ExperimentConfig(abc.ABC):
     @abc.abstractmethod
     def new_networks(self) -> PyTree: ...
 
-    def new_observe_cycle(self, phase: Phase) -> ObserveCycle | None:
-        return None
+    def new_cycle_observers(self) -> CycleObservers:
+        return CycleObservers()
 
-    def new_metric_writer(self, phase: Phase) -> MetricWriter:
-        return NoOpWriter()
+    def new_metric_writers(self) -> MetricWriters:
+        return MetricWriters()
 
     env: EnvParams
     num_eval_cycles: int

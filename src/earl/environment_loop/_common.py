@@ -1,4 +1,4 @@
-"""TODO: delete this file"""
+"""Common code for environment loops."""
 
 from typing import Any, Protocol
 
@@ -46,3 +46,7 @@ class ObserveCycle(Protocol):
     """A function that takes a CycleResult representing the final state after a cycle of environment steps
     and produces a set of metrics using custom logic specific to the environment.
     """
+
+
+def no_op_observe_cycle(cycle_result: CycleResult) -> Metrics:
+    return {}

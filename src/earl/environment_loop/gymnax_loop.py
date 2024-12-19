@@ -13,7 +13,6 @@ from gymnax.environments.environment import Environment as GymnaxEnvironment
 from gymnax.environments.spaces import Discrete
 from jax_loop_utils.metric_writers.interface import MetricWriter
 from jax_loop_utils.metric_writers.interface import Scalar as ScalarMetric
-from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
@@ -27,8 +26,9 @@ from research.earl.core import (
     _OptState,
     _StepState,
 )
-from research.earl.logging.base import ArrayMetrics, CycleResult, ObserveCycle
-from research.earl.logging.metric_key import MetricKey
+from research.earl.environment_loop import ArrayMetrics, CycleResult, ObserveCycle
+from research.earl.environment_loop._common import no_op_observe_cycle
+from research.earl.metric_key import MetricKey
 from research.utils.eqx_filter import filter_scan  # TODO: remove deps on research
 
 _ALL_METRIC_KEYS = {str(k) for k in MetricKey}
@@ -152,8 +152,8 @@ class GymnaxLoop:
         agent: Agent,
         num_envs: int,
         key: PRNGKeyArray,
-        metric_writer: MetricWriter | None = None,
-        observe_cycle: ObserveCycle | None = None,
+        metric_writer: MetricWriter,
+        observe_cycle: ObserveCycle = no_op_observe_cycle,
         inference: bool = False,
         assert_no_recompile: bool = True,
     ):
@@ -184,8 +184,8 @@ class GymnaxLoop:
         self._agent = agent
         self._num_envs = num_envs
         self._key = key
-        self._metric_writer: MetricWriter = metric_writer or NoOpWriter()
-        self._observe_cycle = observe_cycle or _noop_observe_cycle
+        self._metric_writer = metric_writer
+        self._observe_cycle = observe_cycle
         self._inference = inference
         _run_cycle_and_update = partial(self._run_cycle_and_update)
         if assert_no_recompile:
