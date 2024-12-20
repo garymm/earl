@@ -19,14 +19,6 @@ class Image(eqx.Module):
 
     data: jax.Array
 
-    def __eq__(self, other) -> jax.Array:  # type: ignore[override]
-        assert isinstance(other, Image)
-        return self.data == other.data
-
-    def __ne__(self, other) -> jax.Array:  # type: ignore[override]
-        assert isinstance(other, Image)
-        return self.data != other.data
-
 
 _Networks = TypeVar("_Networks", bound=PyTree)
 _OptState = TypeVar("_OptState")
