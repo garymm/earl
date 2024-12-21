@@ -1,16 +1,24 @@
 """Core types."""
 
 import abc
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Generic, NamedTuple, Protocol, TypeVar
 
 import equinox as eqx
+import gymnasium.spaces as gym_spaces
+import gymnax.environments.spaces as gymnax_spaces
 import jax
+import jax.numpy as jnp
+from gymnasium.core import Env as GymnasiumEnv
 from gymnax.environments.environment import Environment as GymnaxEnv
 from gymnax.environments.environment import EnvParams
 from gymnax.environments.spaces import Space
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
+
+
+class ConflictingMetricError(Exception):
+    pass
 
 
 class Image(eqx.Module):
@@ -110,6 +118,82 @@ class EnvInfo:
 
 def env_info_from_gymnax(env: GymnaxEnv, params: EnvParams, num_envs: int) -> EnvInfo:
     return EnvInfo(num_envs, env.observation_space(params), env.action_space(params), env.name)
+
+
+def env_info_from_gymnasium(env: GymnasiumEnv, num_envs: int) -> EnvInfo:
+    observation_space = _convert_gymnasium_space_to_gymnax_space(env.observation_space)
+    action_space = _convert_gymnasium_space_to_gymnax_space(env.action_space)
+    return EnvInfo(num_envs, observation_space, action_space, str(env))
+
+
+# Need to define these functions up here instead of nested so that the
+# functions are not reconstructed on each call.
+@eqx.filter_jit(donate="all-except-first")
+def _step_jit(
+    env_step: EnvStep,
+    state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    step: Callable[[AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep], AgentStep[_StepState]],
+) -> AgentStep[_StepState]:
+    return step(state, env_step)
+
+
+@eqx.filter_jit(donate="all-except-first")
+def _update_experience_jit(
+    others: tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep],
+    experience: _ExperienceState,
+    update_experience: Callable[
+        [AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep], _ExperienceState
+    ],
+):
+    agent_state_no_exp, trajectory = others
+    agent_state = replace(agent_state_no_exp, experience=experience)
+    return update_experience(agent_state, trajectory)
+
+
+@eqx.filter_jit(donate="all")
+def _partition_for_grad_jit(nets: _Networks, partition_for_grad: Callable[[_Networks], tuple[_Networks, _Networks]]):
+    return partition_for_grad(nets)
+
+
+@eqx.filter_jit(donate="all")
+def _optimize_from_grads_jit(
+    state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    nets_grads: PyTree,
+    optimize_from_grads: Callable[
+        [AgentState[_Networks, _OptState, _ExperienceState, _StepState], PyTree],
+        AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    ],
+):
+    return optimize_from_grads(state, nets_grads)
+
+
+@eqx.filter_jit(donate="all")
+def _loss_jit(
+    state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    loss: Callable[[AgentState[_Networks, _OptState, _ExperienceState, _StepState]], tuple[Scalar, Metrics]],
+):
+    return loss(state)
+
+
+def _convert_gymnasium_space_to_gymnax_space(gym_space: gym_spaces.Space) -> gymnax_spaces.Space:
+    """
+    Convert a Gymnasium space into a Gymnax space.
+
+    Args:
+        gym_space: The Gymnasium space to convert.
+    """
+    dtype = jnp.dtype(gym_space.dtype)
+    if isinstance(gym_space, gym_spaces.Box):
+        return gymnax_spaces.Box(
+            low=jnp.asarray(gym_space.low, dtype=dtype),
+            high=jnp.asarray(gym_space.high, dtype=dtype),
+            shape=gym_space.shape,
+            dtype=dtype,
+        )
+    elif isinstance(gym_space, gym_spaces.Discrete):
+        return gymnax_spaces.Discrete(num_categories=gym_space.n.item())
+    else:
+        raise ValueError(f"Unsupported Gymnasium space type: {type(gym_space)}")
 
 
 class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepState]):
@@ -295,13 +379,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
         Returns:
             AgentStep which contains the batch of actions and the updated hidden state.
         """
-
-        @eqx.filter_jit(donate="all-except-first")
         # swap order of args so we can avoid donating env_step
-        def select_action_jit(env_step, state):
-            return self._step(state, env_step)
-
-        return select_action_jit(env_step, state)
+        return _step_jit(env_step, state, self._step)
 
     @abc.abstractmethod
     def _step(
@@ -328,19 +407,9 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
             The updated experience.
         """
 
-        @eqx.filter_jit(donate="all-except-first")
-        def _update_experience_jit(
-            others: tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep],
-            experience: _ExperienceState,
-        ):
-            agent_state_no_exp, trajectory = others
-            agent_state = replace(agent_state_no_exp, experience=experience)
-            return self._update_experience(agent_state, trajectory)
-
         exp = state.experience
         agent_state_no_exp = replace(state, experience=None)
-
-        return _update_experience_jit((agent_state_no_exp, trajectory), exp)
+        return _update_experience_jit((agent_state_no_exp, trajectory), exp, self._update_experience)
 
     @abc.abstractmethod
     def _update_experience(
@@ -362,7 +431,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
             should be calculated, and the second contains the rest. They will be combined by with
             equinox.combine().
         """
-        return eqx.filter_jit(donate="all")(self._partition_for_grad)(nets)
+        return _partition_for_grad_jit(nets, self._partition_for_grad)
 
     def _partition_for_grad(self, nets: _Networks) -> tuple[_Networks, _Networks]:
         """Partitions nets into trainable and non-trainable parts.
@@ -383,7 +452,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
         Note: the returned metrics should not have any keys that conflict with gymnax_loop.MetricKey.
         """
-        return eqx.filter_jit(donate="all")(self._loss)(state)
+        return _loss_jit(state, self._loss)
 
     @abc.abstractmethod
     def _loss(self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]) -> tuple[Scalar, Metrics]:
@@ -404,7 +473,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
             nets_grads is the gradient of the loss w.r.t. the agent's networks. Donated,
                 so callers should not access it after calling.
         """
-        return eqx.filter_jit(donate="all")(self._optimize_from_grads)(state, nets_grads)
+        return _optimize_from_grads_jit(state, nets_grads, self._optimize_from_grads)
 
     @abc.abstractmethod
     def _optimize_from_grads(

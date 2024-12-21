@@ -1,35 +1,41 @@
 import dataclasses
-from unittest import mock
 
 import gymnax
 import gymnax.environments.spaces
 import jax
-import jax.numpy as jnp
 import pytest
-from jax_loop_utils.metric_writers import MemoryWriter
-from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
+from gymnasium.envs.classic_control.cartpole import CartPoleEnv
+from gymnasium.envs.classic_control.pendulum import PendulumEnv
+from gymnax.environments.spaces import Discrete
+from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
 from research.earl.agents.uniform_random_agent import UniformRandom
-from research.earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnax
+from research.earl.core import ConflictingMetricError, Metrics, env_info_from_gymnasium
 from research.earl.environment_loop import CycleResult
-from research.earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey, State
+from research.earl.environment_loop.gymnasium_loop import GymnasiumLoop
+from research.earl.metric_key import MetricKey
 from research.utils.prng import keygen
 
 
 @pytest.mark.parametrize(("inference", "num_off_policy_updates"), [(True, 0), (False, 0), (False, 2)])
 # setting default device speeds things up a little, but running without cuda enabled jaxlib is even faster
 @jax.default_device(jax.devices("cpu")[0])
-def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
-    env, env_params = gymnax.make("CartPole-v1")
-    networks = None
+def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
     num_envs = 2
+    env = CartPoleEnv()
+    env_info = env_info_from_gymnasium(env, num_envs)
+    networks = None
     key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env.action_space().sample, num_off_policy_updates)
+    agent = UniformRandom(env_info.action_space.sample, num_off_policy_updates)
     metric_writer = MemoryWriter()
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=inference)
+    if not inference and not num_off_policy_updates:
+        with pytest.raises(ValueError, match="On-policy training is not supported in GymnasiumLoop."):
+            loop = GymnasiumLoop(env, env_info, agent, next(key_gen), metric_writer=metric_writer, inference=inference)
+        return
+
+    loop = GymnasiumLoop(env, env_info, agent, next(key_gen), metric_writer=metric_writer, inference=inference)
     num_cycles = 2
     steps_per_cycle = 10
-    env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, next(key_gen))
     result = loop.run(agent_state, num_cycles, steps_per_cycle)
     del agent_state
@@ -46,7 +52,8 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
         assert MetricKey.REWARD_MEAN in metrics_for_step
         assert MetricKey.TOTAL_DONES in metrics_for_step
         action_count_sum = 0
-        for i in range(env.num_actions):
+        assert isinstance(env_info.action_space, Discrete)
+        for i in range(env_info.action_space.n):
             action_count_i = metrics_for_step[f"action_counts/{i}"]
             action_count_sum += action_count_i
         assert action_count_sum > 0
@@ -62,43 +69,17 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
         expected_opt_count = num_cycles * (num_off_policy_updates or 1)
         assert result.agent_state.opt.opt_count == expected_opt_count
 
-    assert env.num_actions > 0
-
-
-def test_run_with_state():
-    env, env_params = gymnax.make("CartPole-v1")
-    num_envs = 2
-    obs, env_state = jax.vmap(env.reset)(jax.random.split(jax.random.PRNGKey(0), num_envs))
-    key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env.action_space().sample, 1)
-    env.reset = mock.Mock(spec=env.reset)
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter())
-    agent_state = agent.new_state(None, env_info_from_gymnax(env, env_params, num_envs), jax.random.PRNGKey(0))
-    initial_step_num = 2
-    prev_action = jax.vmap(env.action_space(None).sample)(jax.random.split(jax.random.PRNGKey(0), num_envs))
-    assert isinstance(prev_action, jax.Array)
-    state = State(
-        agent_state,
-        env_state,
-        EnvStep(
-            new_episode=jnp.zeros((num_envs,), dtype=jnp.bool),
-            obs=obs,
-            prev_action=prev_action,
-            reward=jnp.zeros((num_envs,)),
-        ),
-        step_num=initial_step_num,
-    )
-    steps_per_cycle = 10
-    _result = loop.run(state, 1, steps_per_cycle)
-    assert env.reset.call_count == 0
+    assert isinstance(env_info.action_space, Discrete)
+    assert env_info.action_space.n > 0
 
 
 def test_bad_args():
     num_envs = 2
-    env, env_params = gymnax.make("CartPole-v1")
-    agent = UniformRandom(env.action_space().sample, 0)
-    loop = GymnaxLoop(env, env_params, agent, num_envs, jax.random.PRNGKey(0), metric_writer=NoOpWriter())
-    env_info = env_info_from_gymnax(env, env_params, num_envs)
+    env = CartPoleEnv()
+    env_info = env_info_from_gymnasium(env, num_envs)
+    agent = UniformRandom(env_info.action_space.sample, 0)
+    metric_writer = MemoryWriter()
+    loop = GymnasiumLoop(env, env_info, agent, jax.random.PRNGKey(0), metric_writer=metric_writer, inference=True)
     agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
     with pytest.raises(ValueError, match="num_cycles"):
         loop.run(agent_state, 0, 10)
@@ -107,38 +88,39 @@ def test_bad_args():
 
 
 def test_bad_metric_key():
-    env, env_params = gymnax.make("CartPole-v1")
     networks = None
     num_envs = 2
+    env = CartPoleEnv()
+    env_info = env_info_from_gymnasium(env, num_envs)
     key_gen = keygen(jax.random.PRNGKey(0))
     # make the agent return a metric with a key that conflicts with a built-in metric.
-    agent = UniformRandom(env.action_space().sample, 0)
+    agent = UniformRandom(env_info.action_space.sample, 1)
     agent = dataclasses.replace(agent, _prng_metric_key=MetricKey.DURATION_SEC)
 
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter())
+    metric_writer = MemoryWriter()
+    loop = GymnasiumLoop(env, env_info, agent, next(key_gen), metric_writer=metric_writer)
     num_cycles = 1
     steps_per_cycle = 1
-    env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
     with pytest.raises(ConflictingMetricError):
         loop.run(agent_state, num_cycles, steps_per_cycle)
 
 
 def test_continuous_action_space():
-    env, env_params = gymnax.make("Swimmer-misc")
-    networks = None
     num_envs = 2
+    env = PendulumEnv()
+    env_info = env_info_from_gymnasium(env, num_envs)
+    networks = None
     key_gen = keygen(jax.random.PRNGKey(0))
-    action_space = env.action_space()
+    action_space = env_info.action_space
     assert isinstance(action_space, gymnax.environments.spaces.Box)
     assert isinstance(action_space.low, jax.Array)
     assert isinstance(action_space.high, jax.Array)
     agent = UniformRandom(action_space.sample, 0)
     metric_writer = MemoryWriter()
-    loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=True)
+    loop = GymnasiumLoop(env, env_info, agent, next(key_gen), metric_writer=metric_writer, inference=True)
     num_cycles = 1
     steps_per_cycle = 1
-    env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
     _ = loop.run(agent_state, num_cycles, steps_per_cycle)
     for _, v in metric_writer.scalars.items():
@@ -147,33 +129,26 @@ def test_continuous_action_space():
 
 
 def test_observe_cycle():
-    env, env_params = gymnax.make("Swimmer-misc")
-    networks = None
     num_envs = 2
+    env = PendulumEnv()
+    env_info = env_info_from_gymnasium(env, num_envs)
+    networks = None
     key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env.action_space().sample, 0)
-    num_cycles = 2
-    steps_per_cycle = 3
-    env_info = env_info_from_gymnax(env, env_params, num_envs)
-    agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+    agent = UniformRandom(env_info.action_space.sample, 0)
+    metric_writer = MemoryWriter()
 
     def observe_cycle(cycle_result: CycleResult) -> Metrics:
         assert cycle_result.trajectory.obs.shape[0] == num_envs
         assert cycle_result.trajectory.obs.shape[1] == steps_per_cycle
-        assert "discount" in cycle_result.step_infos
         return {"ran": True}
 
-    metric_writer = MemoryWriter()
-    loop = GymnaxLoop(
-        env,
-        env_params,
-        agent,
-        num_envs,
-        next(key_gen),
-        metric_writer=metric_writer,
-        inference=True,
-        observe_cycle=observe_cycle,
+    loop = GymnasiumLoop(
+        env, env_info, agent, next(key_gen), metric_writer=metric_writer, inference=True, observe_cycle=observe_cycle
     )
+    num_cycles = 2
+    steps_per_cycle = 3
+    agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+
     _ = loop.run(agent_state, num_cycles, steps_per_cycle)
     for _, v in metric_writer.scalars.items():
         assert v.get("ran", False)
