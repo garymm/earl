@@ -6,7 +6,6 @@ from typing import Any
 import equinox as eqx
 import jax
 import orbax.checkpoint as ocp
-from gymnax import EnvParams
 from jax_loop_utils.metric_writers import KeepLastWriter
 
 from research.earl.core import Agent, env_info_from_gymnax
@@ -17,7 +16,7 @@ from research.earl.experiments.config import CheckpointRestoreMode, ExperimentCo
 from research.earl.metric_key import MetricKey
 
 
-def _checkpoint_save_args(agent: Agent, env_params: EnvParams, state: LoopResult) -> ocp.args.CheckpointArgs:
+def _checkpoint_save_args(agent: Agent, env_params: Any, state: LoopResult) -> ocp.args.CheckpointArgs:
     agent_state = state.agent_state
     # We split the agent state into arrays and non-arrays because it seems
     # StandardSave/Restore has special handling for arrays, and when we use PyTreeSave/Restore
@@ -57,9 +56,9 @@ def _restore_checkpoint(
     checkpoint_manager: ocp.CheckpointManager,
     restore_from_checkpoint: CheckpointRestoreMode | int,
     agent: Agent,
-    env_params: EnvParams,
+    env_params: Any,
     state: LoopResult,
-) -> tuple[Agent, EnvParams, LoopResult]:
+) -> tuple[Agent, Any, LoopResult]:
     step_num_to_restore = _step_num_to_restore(checkpoint_manager, restore_from_checkpoint)
     agent_arrays, agent_non_arrays = eqx.partition(state.agent_state, eqx.is_array)
     agent_callable, agent_non_callable = eqx.partition(agent, lambda x: isinstance(x, Callable))

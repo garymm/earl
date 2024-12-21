@@ -3,7 +3,7 @@
 import abc
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Generic, NamedTuple, Protocol, TypeVar
+from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 
 import equinox as eqx
 import gymnasium.spaces as gym_spaces
@@ -12,7 +12,6 @@ import jax
 import jax.numpy as jnp
 from gymnasium.core import Env as GymnasiumEnv
 from gymnax.environments.environment import Environment as GymnaxEnv
-from gymnax.environments.environment import EnvParams
 from gymnax.environments.spaces import Space
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
@@ -116,7 +115,7 @@ class EnvInfo:
     name: str
 
 
-def env_info_from_gymnax(env: GymnaxEnv, params: EnvParams, num_envs: int) -> EnvInfo:
+def env_info_from_gymnax(env: GymnaxEnv, params: Any, num_envs: int) -> EnvInfo:
     return EnvInfo(num_envs, env.observation_space(params), env.action_space(params), env.name)
 
 

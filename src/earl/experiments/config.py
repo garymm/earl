@@ -1,10 +1,13 @@
 import abc
 import enum
 import pathlib
+import typing
 from dataclasses import dataclass
 
+import draccus.choice_types
+import jax
 import orbax.checkpoint as ocp
-from gymnax import EnvParams
+from draccus.parsers.decoding import decode as draccus_decode
 from gymnax.environments.environment import Environment
 from jax_loop_utils.metric_writers.interface import MetricWriter
 from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
@@ -12,6 +15,9 @@ from jaxtyping import PyTree
 
 from research.earl.core import Agent
 from research.earl.environment_loop import ObserveCycle, no_op_observe_cycle
+
+# enable draccus to parse jax arrays from strings
+draccus_decode.register(jax.Array, jax.numpy.asarray)  # pyright: ignore[reportFunctionMemberAccess]
 
 
 class CheckpointRestoreMode(enum.StrEnum):
@@ -58,6 +64,36 @@ class MetricWriters:
     eval: MetricWriter = NoOpWriter()
 
 
+class EnvConfig(draccus.choice_types.ChoiceRegistry):
+    """Environment configuration
+
+    This is a special "choice type", which means draccus will search
+    for env.type and use that to decide the actual type to parse the
+    rest of the env.* into.
+
+    Users of this code should register their real configuration types
+    with:
+
+    EnvConfig.register_subclass("my_env_type", MyEnvConfig), or
+
+    @EnvConfig.register_subclass("my_env_type")
+    @dataclass
+    class MyEnvConfig(EnvConfig):
+        ...
+
+    Note that the class passed to register_subclass() does not actually
+    inherit from EnvConfig.
+
+    Then when ExperimentConfig is parsed, the env.type field will be
+    used to determine the actual type to parse the rest of the env.* into.
+
+    You can use EnvConfig.get_choice_name(type(env)) to go from the type
+    to the registered name.
+    """
+
+    pass
+
+
 @dataclass
 class ExperimentConfig(abc.ABC):
     """Configures an experiment.
@@ -82,13 +118,42 @@ class ExperimentConfig(abc.ABC):
     def new_metric_writers(self) -> MetricWriters:
         return MetricWriters()
 
-    env: EnvParams
     num_eval_cycles: int
     num_train_cycles: int
     num_envs: int
     random_seed: int
     steps_per_cycle: int
+    # This type annotation is just to activate the
+    # choice type functionality in draccus, but nothing actually
+    # enforces that the env field is a subclass of EnvConfig.
+    env: EnvConfig
     checkpoint: CheckpointConfig | None = None
+
+    # explititly define this so we can change the type of env and
+    # avoid every subclass of ExperimentConfig having to supress type
+    # checking.
+    def __init__(
+        self,
+        num_eval_cycles: int,
+        num_train_cycles: int,
+        num_envs: int,
+        random_seed: int,
+        steps_per_cycle: int,
+        # diff type from what's in the dataclass field to reflect that
+        # env is not required to be a subclass of EnvConfig.
+        env: typing.Any,
+        checkpoint: CheckpointConfig | None = None,
+    ) -> None:
+        self.num_eval_cycles = num_eval_cycles
+        self.num_train_cycles = num_train_cycles
+        self.num_envs = num_envs
+        self.random_seed = random_seed
+        self.steps_per_cycle = steps_per_cycle
+        self.env = typing.cast(EnvConfig, env)
+        self.checkpoint = checkpoint
+
+        super().__init__()
+        self.__post_init__()
 
     def __post_init__(self):
         if self.num_eval_cycles < 0:
