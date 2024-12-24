@@ -1,6 +1,6 @@
 import dataclasses
 import pathlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import equinox as eqx
@@ -88,19 +88,46 @@ def _restore_checkpoint(
     )
 
 
-def _config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
-    config_dict = dataclasses.asdict(config)
-    # Only flattens 1 level of nesting because that's
-    # what seems to result in readable logs.
-    flat_dict = {}
-    for k, v in config_dict.items():
-        assert isinstance(k, str)
-        if isinstance(v, dict):
-            for k2, v2 in v.items():
-                flat_dict[f"{k}/{k2}"] = v2
+# Type comes from
+# https://pytorch.org/docs/stable/tensorboard.html#torch.utils.tensorboard.writer.SummaryWriter.add_hparams.
+_ConfigValueType = str | bool | int | float | None
+
+
+def _is_dataclass_instance(obj):
+    return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
+
+
+def _dataclass_to_dict(obj):
+    return dict((field.name, getattr(obj, field.name)) for field in dataclasses.fields(obj))
+
+
+def _config_to_dict(obj, prefix="") -> dict[str, _ConfigValueType]:
+    out = {}
+
+    kv_iter: Iterable[tuple[object, object]]
+    if isinstance(obj, dict):
+        kv_iter = obj.items()
+    elif _is_dataclass_instance(obj):
+        kv_iter = _dataclass_to_dict(obj).items()
+    else:
+        raise ValueError(f"parameter obj must be a dict or dataclass but has type {type(obj)}")
+
+    for k_outer, v_outer in kv_iter:
+        # We are iterating arbitrary objects and the convention is that fields
+        # starting with `_` are private. We assume that these fields should not
+        # be serialized.
+        if not isinstance(k_outer, str) or k_outer.startswith("_"):
+            continue
+
+        k_outer = f"{prefix}.{k_outer}" if prefix else f"{k_outer}"
+
+        if isinstance(v_outer, dict) or _is_dataclass_instance(v_outer):
+            for k_inner, v_inner in _config_to_dict(v_outer, prefix=k_outer).items():
+                out[k_inner] = v_inner
         else:
-            flat_dict[k] = v
-    return flat_dict
+            out[k_outer] = v_outer if isinstance(v_outer, _ConfigValueType) else str(v_outer)
+
+    return out
 
 
 def _new_checkpoint_manager(directory: str | pathlib.Path, opts: ocp.CheckpointManagerOptions) -> ocp.CheckpointManager:

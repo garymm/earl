@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import shutil
 
@@ -16,7 +17,12 @@ from jaxtyping import PyTree
 from research.earl.agents.uniform_random_agent import UniformRandom
 from research.earl.core import Agent, Image, Metrics
 from research.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, MetricWriters
-from research.earl.experiments.run_experiment import _new_checkpoint_manager, _restore_checkpoint, run_experiment
+from research.earl.experiments.run_experiment import (
+    _config_to_dict,
+    _new_checkpoint_manager,
+    _restore_checkpoint,
+    run_experiment,
+)
 from research.earl.metric_key import MetricKey
 
 
@@ -247,3 +253,62 @@ def test_metric_serialization():
     checkpointer.save(path / "checkpoint_name", metrics)
     restored_metrics = checkpointer.restore(path / "checkpoint_name/", metrics_shape, strict=True)
     chex.assert_trees_all_equal(restored_metrics, metrics, strict=True)
+
+
+def test_config_to_dict_flat():
+    @dataclasses.dataclass
+    class FlatConfig:
+        str_value: str = "test"
+        int_value: int = 42
+        float_value: float = 3.14
+        bool_value: bool = True
+        none_value: None = None
+        _private: str = "private"  # Should be excluded
+
+    config = FlatConfig()
+    result = _config_to_dict(config)
+
+    assert result == {
+        "str_value": "test",
+        "int_value": 42,
+        "float_value": 3.14,
+        "bool_value": True,
+        "none_value": None,
+    }
+
+
+def test_config_to_dict_nested():
+    @dataclasses.dataclass
+    class InnerConfig:
+        value: int = 1
+
+    @dataclasses.dataclass
+    class OuterConfig:
+        inner: InnerConfig
+        value: str = "outer"
+
+    config = OuterConfig(inner=InnerConfig())
+    result = _config_to_dict(config)
+
+    assert result == {"inner.value": 1, "value": "outer"}
+
+
+def test_config_to_dict_non_config_value_type():
+    @dataclasses.dataclass
+    class ConfigWithArray:
+        array: jnp.ndarray = dataclasses.field(default_factory=lambda: jnp.array([1, 2, 3]))
+        value: int = 42
+
+    config = ConfigWithArray()
+    result = _config_to_dict(config)
+
+    assert result == {"array": str(jnp.array([1, 2, 3])), "value": 42}
+
+
+def test_config_to_dict_invalid_type():
+    class NonDataclass:
+        value: int = 42
+
+    config = NonDataclass()
+    with pytest.raises(ValueError, match="parameter obj must be a dict or dataclass but has type.*"):
+        _config_to_dict(config)
