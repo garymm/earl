@@ -196,12 +196,13 @@ class GymnaxLoop:
                 cycle_result.key,
             )
 
-            scalar_metrics, image_metrics = extract_metrics(cycle_result, observe_cycle_metrics)
-            scalar_metrics[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
+            metrics_by_type = extract_metrics(cycle_result, observe_cycle_metrics)
+            metrics_by_type.scalar[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
 
             step_num = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
-            self._metric_writer.write_scalars(step_num, scalar_metrics)
-            self._metric_writer.write_images(step_num, image_metrics)
+            self._metric_writer.write_scalars(step_num, metrics_by_type.scalar)
+            self._metric_writer.write_images(step_num, metrics_by_type.image)
+            self._metric_writer.write_videos(step_num, metrics_by_type.video)
 
         return Result(agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle)
 

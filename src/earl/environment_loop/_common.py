@@ -1,7 +1,7 @@
 """Common code for environment loops."""
 
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Generic, Protocol
 
 import equinox as eqx
@@ -17,6 +17,7 @@ from research.earl.core import (
     EnvStep,
     Image,
     Metrics,
+    Video,
     _ExperienceState,
     _Networks,
     _OptState,
@@ -166,13 +167,18 @@ def to_num_envs_first(x):
     return x
 
 
-def extract_metrics(
-    cycle_result: CycleResult, observe_cycle_metrics: Metrics
-) -> tuple[dict[str, float | int], dict[str, jax.Array]]:
+@dataclasses.dataclass
+class MetricsByType:
+    scalar: dict[str, float | int]
+    image: dict[str, jax.Array]
+    video: dict[str, jax.Array]
+
+
+def extract_metrics(cycle_result: CycleResult, observe_cycle_metrics: Metrics) -> MetricsByType:
     """Extracts scalar and image metrics from a CycleResult and observe_cycle_metrics."""
     scalar_metrics: dict[str, float | int] = {}
     image_metrics: dict[str, jax.Array] = {}
-
+    video_metrics: dict[str, jax.Array] = {}
     action_counts = cycle_result.metrics.pop(MetricKey.ACTION_COUNTS)
     assert isinstance(action_counts, jax.Array)
     if action_counts.shape:  # will be empty tuple if not discrete action space
@@ -190,7 +196,26 @@ def extract_metrics(
             scalar_metrics[k] = v
         elif isinstance(v, Image):
             image_metrics[k] = v.data
+        elif isinstance(v, Video):
+            video_metrics[k] = v.data
         else:
             raise ValueError(f"Unknown metric type: {type(v)}")
 
-    return scalar_metrics, image_metrics
+    return MetricsByType(scalar=scalar_metrics, image=image_metrics, video=video_metrics)
+
+
+def pixel_obs_to_video_observe_cycle(cycle_result: CycleResult) -> Metrics:
+    obs = cycle_result.trajectory.obs
+    if len(obs.shape) not in (4, 5):
+        raise ValueError(f"Expected trajectory.obs to have shape (T, H, W, C) or (B, T, H, W, C)," f"got {obs.shape}")
+    if len(obs.shape) == 4:
+        return {"video": Video(obs)}
+    else:
+        return {f"video_{i}": Video(obs[i]) for i in range(obs.shape[0])}
+
+
+def multi_observe_cycle(observers: Sequence[ObserveCycle]) -> ObserveCycle:
+    def _multi_observe_cycle(cycle_result: CycleResult) -> Metrics:
+        return dict(item for observe_cycle in observers for item in observe_cycle(cycle_result).items())
+
+    return _multi_observe_cycle

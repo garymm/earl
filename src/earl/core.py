@@ -21,8 +21,13 @@ class ConflictingMetricError(Exception):
 
 
 class Image(eqx.Module):
-    """When returning an image from observe_cycle(), wrap it in this class.
-    This will allow the logger to recognize it as an Image."""
+    """When returning an image from observe_cycle(), wrap it in this class."""
+
+    data: jax.Array
+
+
+class Video(eqx.Module):
+    """When returning a video from observe_cycle(), wrap it in this class."""
 
     data: jax.Array
 
@@ -32,7 +37,7 @@ _OptState = TypeVar("_OptState")
 _StepState = TypeVar("_StepState")
 _ExperienceState = TypeVar("_ExperienceState")
 # Keyed by name.
-Metrics = Mapping[str, Scalar | float | int | Image]
+Metrics = Mapping[str, Scalar | float | int | Image | Video]
 
 
 class SupportsStr(Protocol):
