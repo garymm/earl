@@ -21,12 +21,12 @@ from tqdm import tqdm
 from research.earl.core import (
     Agent,
     AgentState,
-    EnvInfo,
     EnvStep,
     _ExperienceState,
     _Networks,
     _OptState,
     _StepState,
+    env_info_from_gymnasium,
 )
 from research.earl.environment_loop import (
     ArrayMetrics,
@@ -61,6 +61,19 @@ def _copy_pytree(pytree: PyTree) -> PyTree:
     return jax.tree.map(lambda x: x.copy(), pytree)
 
 
+@eqx.filter_grad(has_aux=True)
+def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state, agent: Agent) -> tuple[Scalar, ArrayMetrics]:
+    # this is a free function so we don't have to pass self as first arg, since filter_grad
+    # takes gradient with respect to the first arg.
+    agent_state = dataclasses.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
+    loss, metrics = agent.loss(agent_state)
+    raise_if_metric_conflicts(metrics)
+    # inside jit, return values are guaranteed to be arrays
+    mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
+    mutable_metrics[MetricKey.LOSS] = loss
+    return loss, mutable_metrics
+
+
 class GymnasiumLoop:
     """Runs an Agent in a Gymnasium environment.
 
@@ -76,54 +89,58 @@ class GymnasiumLoop:
     def __init__(
         self,
         env: GymnasiumEnv,
-        env_info: EnvInfo,
         agent: Agent,
+        num_envs: int,
         key: PRNGKeyArray,
         metric_writer: MetricWriter,
         observe_cycle: ObserveCycle = no_op_observe_cycle,
         inference: bool = False,
+        assert_no_recompile: bool = True,
         vectorization_mode: typing.Literal["sync", "async"] = "async",
     ):
         """Initializes the GymnasiumLoop.
 
         Args:
             env: The environment.
-            env_info: A struct with information about the environment's observation/action spaces and number
-                of environments.
             agent: The agent.
+            num_envs: The number of environments to run in parallel.
             key: The PRNG key.
             metric_writer: The metric writer to write metrics to.
             observe_cycle: A function that takes a CycleResult representing a final environment state and a trajectory
                 of length steps_per_cycle and runs any custom logic on it.
             inference: If False, agent.update_for_cycle() will not be called.
+            assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
             vectorization_mode: Whether to create a synchronous or asynchronous vectorized environment from the provided
                 Gymnasium environment.
         """
-        # Earl requires autoreset to be enabled.
-        env = Autoreset(env)
+        env = Autoreset(env)  # run() assumes autoreset.
 
         def _env_factory() -> GymnasiumEnv:
             return copy.deepcopy(env)
 
         if vectorization_mode == "sync":
-            self._env = SyncVectorEnv([_env_factory for _ in range(env_info.num_envs)])
+            self._env = SyncVectorEnv([_env_factory for _ in range(num_envs)])
         elif vectorization_mode == "async":
             # Cannot use forkserver because it is unsafe with multithreaded
             # jax
             multiprocessing.set_start_method("spawn", force=True)
-            self._env = AsyncVectorEnv([_env_factory for _ in range(env_info.num_envs)])
+            self._env = AsyncVectorEnv([_env_factory for _ in range(num_envs)])
 
         sample_key, key = jax.random.split(key)
-        sample_key = jax.random.split(sample_key, env_info.num_envs)
+        sample_key = jax.random.split(sample_key, num_envs)
+        env_info = env_info_from_gymnasium(env, num_envs)
         self._action_space = env_info.action_space
         self._example_action = jax.vmap(self._action_space.sample)(sample_key)
         self._agent = agent
-        self._num_envs = env_info.num_envs
+        self._num_envs = num_envs
         self._key = key
         self._metric_writer: MetricWriter = metric_writer
         self._observe_cycle = observe_cycle
         self._inference = inference
-        self._update = eqx.filter_jit(self._update, donate="warn")
+        update = self._update
+        if assert_no_recompile:
+            update = eqx.debug.assert_max_traces(update, max_traces=1)
+        self._update = eqx.filter_jit(update, donate="warn")
 
         if not self._inference and not self._agent.num_off_policy_optims_per_cycle():
             raise ValueError("On-policy training is not supported in GymnasiumLoop.")
@@ -132,17 +149,16 @@ class GymnasiumLoop:
         """Resets the environment.
 
         Should probably not be called by most users.
-        Exposed so that callers can get the env_state and env_step to restore from a checkpoint.
+        Exposed so that callers can get the env_step to restore from a checkpoint.
         """
         obs, _info = self._env.reset()
 
-        env_step = EnvStep(
+        return EnvStep(
             new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
             obs=jnp.array(obs),
             prev_action=jnp.zeros_like(self._example_action),
             reward=jnp.zeros((self._num_envs,)),
         )
-        return env_step
 
     def run(
         self,
@@ -224,37 +240,27 @@ class GymnasiumLoop:
 
         return Result(agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle)
 
+    def _off_policy_update(
+        self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
+    ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
+        nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
+        grad, metrics = _loss_for_cycle_grad(
+            nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
+        )
+        grad_means = pytree_leaf_means(grad, "grad_mean")
+        metrics.update(grad_means)
+        agent_state = self._agent.optimize_from_grads(agent_state, grad)
+        return agent_state, metrics
+
     def _update(
         self,
         agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
         cycle_result: CycleResult,
     ) -> CycleResult:
-        @eqx.filter_grad(has_aux=True)
-        def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state) -> tuple[Scalar, ArrayMetrics]:
-            agent_state = dataclasses.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
-            loss, metrics = self._agent.loss(agent_state)
-            raise_if_metric_conflicts(metrics)
-            # inside jit, return values are guaranteed to be arrays
-            mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
-            mutable_metrics[MetricKey.LOSS] = loss
-            return loss, mutable_metrics
-
-        def _off_policy_update(
-            agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
-        ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
-            nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
-            grad, metrics = _loss_for_cycle_grad(
-                nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None)
-            )
-            grad_means = pytree_leaf_means(grad, "grad_mean")
-            metrics.update(grad_means)
-            agent_state = self._agent.optimize_from_grads(agent_state, grad)
-            return agent_state, metrics
-
         metrics = cycle_result.metrics
         if not self._inference:
             agent_state, off_policy_metrics = filter_scan(
-                _off_policy_update,
+                self._off_policy_update,
                 init=agent_state,
                 xs=None,
                 length=self._agent.num_off_policy_optims_per_cycle(),
@@ -379,10 +385,15 @@ class GymnasiumLoop:
 
         return CycleResult(
             agent_state,
-            typing.cast(EnvState, None),
+            # not really the env state in any meaningful way, but we need to pass something
+            # valid to make this code more similar to GymnaxLoop.
+            EnvState(time=num_steps),
             final_carry_env_step,
             final_carry.key,
             metrics,
             trajectory,
             step_infos,
         )
+
+    def close(self):
+        self._env.close()

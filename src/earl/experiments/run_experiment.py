@@ -4,11 +4,17 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 import equinox as eqx
+import gymnax
 import jax
 import orbax.checkpoint as ocp
+from gymnasium.core import Env as GymnasiumEnv
 from jax_loop_utils.metric_writers import KeepLastWriter
+from jax_loop_utils.metric_writers.interface import MetricWriter
+from jaxtyping import PRNGKeyArray
 
-from research.earl.core import Agent, env_info_from_gymnax
+from research.earl.core import Agent, env_info_from_gymnasium, env_info_from_gymnax
+from research.earl.environment_loop import ObserveCycle, no_op_observe_cycle
+from research.earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from research.earl.environment_loop.gymnax_loop import GymnaxLoop
 from research.earl.environment_loop.gymnax_loop import Result as LoopResult
 from research.earl.environment_loop.gymnax_loop import State as LoopState
@@ -136,6 +142,20 @@ def _new_checkpoint_manager(directory: str | pathlib.Path, opts: ocp.CheckpointM
     return ocp.CheckpointManager(directory, options=opts)
 
 
+def _new_gymnasium_loop(
+    env: GymnasiumEnv,
+    env_params: Any,
+    agent: Agent,
+    num_envs: int,
+    key: PRNGKeyArray,
+    metric_writer: MetricWriter,
+    observe_cycle: ObserveCycle = no_op_observe_cycle,
+    inference: bool = False,
+    assert_no_recompile: bool = True,
+) -> GymnasiumLoop:
+    return GymnasiumLoop(env, agent, num_envs, key, metric_writer, observe_cycle, inference, assert_no_recompile)
+
+
 def run_experiment(config: ExperimentConfig) -> LoopResult:
     """Runs an experiment as specified in config."""
 
@@ -143,6 +163,8 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     key = jax.random.PRNGKey(config.random_seed)
     env = config.new_env()
     env_params = config.env
+    if env_params is None:
+        env_params = "dummy_env_params"  # valid pytree for snapshot / restore
     networks = config.new_networks()
     metric_writers = config.new_metric_writers()
     train_metric_writer = KeepLastWriter(metric_writers.train)
@@ -164,10 +186,25 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
                 ),
             )["num_envs"]
             num_envs = int(num_envs)
-    train_loop = GymnaxLoop(
-        env, env_params, agent, num_envs, key, metric_writer=train_metric_writer, observe_cycle=train_observe_cycle
+
+    if isinstance(env, GymnasiumEnv):
+        env_info = env_info_from_gymnasium(env, config.num_envs)
+        loop_factory = _new_gymnasium_loop
+    else:
+        assert isinstance(env, gymnax.environments.environment.Environment)
+        env_info = env_info_from_gymnax(env, env_params, config.num_envs)
+        loop_factory = GymnaxLoop
+
+    train_loop: GymnasiumLoop | GymnaxLoop = loop_factory(
+        env,  # pyright: ignore[reportArgumentType]
+        env_params,
+        agent,
+        config.num_envs,
+        train_key,
+        metric_writer=train_metric_writer,
+        observe_cycle=train_observe_cycle,
     )
-    env_info = env_info_from_gymnax(env, env_params, num_envs)
+
     train_agent_state = agent.new_state(networks, env_info, train_key)
     del networks
 
@@ -177,7 +214,10 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     if checkpoint_manager:
         assert config.checkpoint is not None
         if config.checkpoint.restore_from_checkpoint is not None:
-            env_state, env_step = train_loop.reset_env()
+            if isinstance(train_loop, GymnaxLoop):
+                env_state, env_step = train_loop.reset_env()
+            else:
+                env_state, env_step = gymnax.EnvState(time=0), train_loop.reset_env()
             train_loop_state = LoopResult(train_loop_state.agent_state, env_state, env_step)
             agent, env_params, train_loop_state = _restore_checkpoint(
                 checkpoint_manager, config.checkpoint.restore_from_checkpoint, agent, env_params, train_loop_state
@@ -193,8 +233,8 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     if config.num_eval_cycles:
         train_cycles_per_eval = config.num_train_cycles // config.num_eval_cycles
         eval_key, key = jax.random.split(key)
-        eval_loop = GymnaxLoop(
-            env,
+        eval_loop = loop_factory(
+            env,  # pyright: ignore[reportArgumentType]
             env_params,
             agent,
             config.num_envs,
@@ -203,6 +243,8 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
             observe_cycle=observe_cycles.eval,
             inference=True,
         )
+
+    eval_loop_state = None
 
     for _ in range(config.num_eval_cycles or 1):
         if train_cycles_per_eval:
@@ -228,5 +270,13 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     if checkpoint_manager:
         checkpoint_manager.wait_until_finished()
 
-    assert isinstance(train_loop_state, LoopResult)
-    return train_loop_state
+    train_loop.close()
+    if eval_loop:
+        eval_loop.close()
+
+    if train_cycles_per_eval:
+        assert isinstance(train_loop_state, LoopResult)
+        return train_loop_state
+    else:  # eval only
+        assert isinstance(eval_loop_state, LoopResult)
+        return eval_loop_state

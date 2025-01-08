@@ -8,7 +8,8 @@ import draccus.choice_types
 import jax
 import orbax.checkpoint as ocp
 from draccus.parsers.decoding import decode as draccus_decode
-from gymnax.environments.environment import Environment
+from gymnasium.core import Env as GymnasiumEnv
+from gymnax.environments.environment import Environment as GymnaxEnv
 from jax_loop_utils.metric_writers.interface import MetricWriter
 from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 from jaxtyping import PyTree
@@ -107,7 +108,7 @@ class ExperimentConfig(abc.ABC):
     def new_agent(self) -> Agent: ...
 
     @abc.abstractmethod
-    def new_env(self) -> Environment: ...
+    def new_env(self) -> GymnaxEnv | GymnasiumEnv: ...
 
     @abc.abstractmethod
     def new_networks(self) -> PyTree: ...

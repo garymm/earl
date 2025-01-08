@@ -1,21 +1,25 @@
 import dataclasses
 import os
 import shutil
+from unittest.mock import patch
 
 import chex
+import gymnasium
 import gymnax
 import gymnax.environments.spaces
 import jax
 import jax.numpy as jnp
 import orbax.checkpoint as ocp
 import pytest
+from gymnasium.core import Env as GymnasiumEnv
 from gymnax import EnvParams
-from gymnax.environments.environment import Environment
+from gymnax.environments.environment import Environment as GymnaxEnv
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 from jaxtyping import PyTree
 
 from research.earl.agents.uniform_random_agent import UniformRandom
-from research.earl.core import Agent, Image, Metrics
+from research.earl.core import Agent, Image, Metrics, env_info_from_gymnasium
+from research.earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from research.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, MetricWriters
 from research.earl.experiments.run_experiment import (
     _config_to_dict,
@@ -26,8 +30,18 @@ from research.earl.experiments.run_experiment import (
 from research.earl.metric_key import MetricKey
 
 
+class MockGymnasiumLoop(GymnasiumLoop):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.close_called = False
+
+    def close(self):
+        super().close()
+        self.close_called = True
+
+
 class FakeExperimentConfig(ExperimentConfig):
-    def __init__(self, env_obj: Environment, agent_obj: Agent, *args, **kwargs):
+    def __init__(self, env_obj: GymnasiumEnv | GymnaxEnv, agent_obj: Agent, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._env_obj = env_obj
         self._agent_obj = agent_obj
@@ -38,7 +52,7 @@ class FakeExperimentConfig(ExperimentConfig):
     def new_agent(self) -> Agent:
         return self._agent_obj
 
-    def new_env(self) -> Environment:
+    def new_env(self) -> GymnasiumEnv | GymnaxEnv:
         return self._env_obj
 
     def new_networks(self) -> PyTree:
@@ -63,10 +77,18 @@ def test_run_experiment_num_train_cycles_not_divisible():
         )
 
 
+@pytest.mark.parametrize("env_backend", ["gymnasium", "gymnax"])
 @pytest.mark.parametrize("num_eval_cycles", [0, 2])
-def test_run_experiment_no_eval_cycles(num_eval_cycles: int):
-    env, env_params = gymnax.make("CartPole-v1")
-    agent = UniformRandom(env.action_space().sample, 0)
+def test_run_experiment_no_eval_cycles(env_backend: str, num_eval_cycles: int):
+    if env_backend == "gymnax":
+        env, env_params = gymnax.make("CartPole-v1")
+        action_space = env.action_space(env_params)  # pyright: ignore[reportArgumentType]
+    else:
+        env = gymnasium.make("CartPole-v1")
+        env_params = None
+        action_space = env_info_from_gymnasium(env, 1).action_space
+
+    agent = UniformRandom(action_space.sample, 1)
     experiment = FakeExperimentConfig(
         env_obj=env,
         agent_obj=agent,
@@ -103,9 +125,17 @@ def test_run_experiment_no_eval_cycles(num_eval_cycles: int):
         )
 
 
-def test_restore_with_no_checkpoint(tmp_path):
-    env, env_params = gymnax.make("CartPole-v1")
-    agent = UniformRandom(env.action_space().sample, 0)
+@pytest.mark.parametrize("env_backend", ["gymnasium", "gymnax"])
+def test_restore_with_no_checkpoint(env_backend: str, tmp_path):
+    if env_backend == "gymnax":
+        env, env_params = gymnax.make("CartPole-v1")
+        action_space = env.action_space(env_params)  # pyright: ignore[reportArgumentType]
+    else:
+        env = gymnasium.make("CartPole-v1")
+        env_params = None
+        action_space = env_info_from_gymnasium(env, 1).action_space
+
+    agent = UniformRandom(action_space.sample, 0)
     max_to_keep = 2
     checkpoint_manager_options = ocp.CheckpointManagerOptions(save_interval_steps=1, max_to_keep=max_to_keep)
     checkpoints_dir = tmp_path / "checkpoints"
@@ -129,15 +159,21 @@ def test_restore_with_no_checkpoint(tmp_path):
         run_experiment(experiment)
 
 
-def test_checkpointing(tmp_path):
+@pytest.mark.parametrize("env_backend", ["gymnasium", "gymnax"])
+def test_checkpointing(env_backend: str, tmp_path):
     def create_experiment(
         checkpoints_dir: str, num_eval_cycles: int, restore_from_checkpoint: CheckpointRestoreMode | int | None = None
     ):
-        env, env_params = gymnax.make("CartPole-v1")
-
+        if env_backend == "gymnax":
+            env, env_params = gymnax.make("CartPole-v1")
+            action_space = env.action_space(env_params)  # pyright: ignore[reportArgumentType]
+        else:
+            env = gymnasium.make("CartPole-v1")
+            env_params = None
+            action_space = env_info_from_gymnasium(env, 1).action_space
         return FakeExperimentConfig(
             env_obj=env,
-            agent_obj=UniformRandom(env.action_space().sample, 0),
+            agent_obj=UniformRandom(action_space.sample, 1),
             env=env_params,
             num_eval_cycles=num_eval_cycles,
             num_train_cycles=10,
@@ -215,9 +251,17 @@ def test_checkpointing(tmp_path):
     assert restored_loop_state.step_num == step_to_restore
 
 
-def test_error_on_restore_only_no_training():
-    env, env_params = gymnax.make("CartPole-v1")
-    agent = UniformRandom(env.action_space().sample, 0)
+@pytest.mark.parametrize("env_backend", ["gymnasium", "gymnax"])
+def test_error_on_restore_only_no_training(env_backend: str):
+    if env_backend == "gymnax":
+        env, env_params = gymnax.make("CartPole-v1")
+        action_space = env.action_space(env_params)  # pyright: ignore[reportArgumentType]
+    else:
+        env = gymnasium.make("CartPole-v1")
+        env_params = None
+        action_space = env_info_from_gymnasium(env, 1).action_space
+
+    agent = UniformRandom(action_space.sample, 0)
     with pytest.raises(ValueError, match="num_train_cycles must be positive"):
         FakeExperimentConfig(
             env_obj=env,
@@ -253,6 +297,58 @@ def test_metric_serialization():
     checkpointer.save(path / "checkpoint_name", metrics)
     restored_metrics = checkpointer.restore(path / "checkpoint_name/", metrics_shape, strict=True)
     chex.assert_trees_all_equal(restored_metrics, metrics, strict=True)
+
+
+def test_run_experiment_closes_loops():
+    """Test that run_experiment properly closes both train and eval loops."""
+    env = gymnasium.make("CartPole-v1")
+    action_space = env_info_from_gymnasium(env, 1).action_space
+
+    agent = UniformRandom(action_space.sample, 1)
+    experiment = FakeExperimentConfig(
+        env_obj=env,
+        agent_obj=agent,
+        env=None,
+        num_eval_cycles=2,  # Make sure we have eval cycles
+        num_train_cycles=10,
+        random_seed=42,
+        num_envs=1,
+        steps_per_cycle=2,
+    )
+
+    train_loop = None
+    eval_loop = None
+
+    # Override _new_gymnasium_loop to use our mock loop
+    def mock_new_gymnasium_loop(
+        env,
+        env_params,
+        agent,
+        num_envs,
+        key,
+        metric_writer,
+        observe_cycle,
+        inference: bool = False,
+        assert_no_recompile: bool = True,
+    ):
+        nonlocal train_loop, eval_loop
+        loop = MockGymnasiumLoop(
+            env, agent, num_envs, key, metric_writer, observe_cycle, inference, assert_no_recompile
+        )
+        if inference:
+            eval_loop = loop
+        else:
+            train_loop = loop
+        return loop
+
+    with patch("research.earl.experiments.run_experiment._new_gymnasium_loop", mock_new_gymnasium_loop):
+        _ = run_experiment(experiment)
+
+    assert train_loop is not None
+    assert train_loop.close_called
+
+    assert eval_loop is not None
+    assert eval_loop.close_called
 
 
 def test_config_to_dict_flat():

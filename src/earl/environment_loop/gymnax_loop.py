@@ -42,6 +42,19 @@ from research.earl.metric_key import MetricKey
 from research.utils.eqx_filter import filter_scan  # TODO: remove deps on research
 
 
+@eqx.filter_grad(has_aux=True)
+def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state, agent: Agent) -> tuple[Scalar, ArrayMetrics]:
+    # this is a free function so we don't have to pass self as first arg, since filter_grad
+    # takes gradient with respect to the first arg.
+    agent_state = dataclasses.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
+    loss, metrics = agent.loss(agent_state)
+    raise_if_metric_conflicts(metrics)
+    # inside jit, return values are guaranteed to be arrays
+    mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
+    mutable_metrics[MetricKey.LOSS] = loss
+    return loss, mutable_metrics
+
+
 class GymnaxLoop:
     """Runs an Agent in a Gymnax environment.
 
@@ -95,7 +108,7 @@ class GymnaxLoop:
         self._metric_writer = metric_writer
         self._observe_cycle = observe_cycle
         self._inference = inference
-        _run_cycle_and_update = partial(self._run_cycle_and_update)
+        _run_cycle_and_update = self._run_cycle_and_update
         if assert_no_recompile:
             _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=1)
         self._run_cycle_and_update = eqx.filter_jit(_run_cycle_and_update, donate="warn")
@@ -206,6 +219,18 @@ class GymnaxLoop:
 
         return Result(agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle)
 
+    def _off_policy_update(
+        self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
+    ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
+        nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
+        grad, metrics = _loss_for_cycle_grad(
+            nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
+        )
+        grad_means = pytree_leaf_means(grad, "grad_mean")
+        metrics.update(grad_means)
+        agent_state = self._agent.optimize_from_grads(agent_state, grad)
+        return agent_state, metrics
+
     def _run_cycle_and_update(
         self,
         agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
@@ -214,6 +239,8 @@ class GymnaxLoop:
         key: PRNGKeyArray,
         steps_per_cycle: int,
     ) -> CycleResult:
+        # this is a nested function so we don't have to pass self as first arg, since filter_grad
+        # takes gradient with respect to the first arg.
         @eqx.filter_grad(has_aux=True)
         def _run_cycle_and_loss_grad(
             nets_yes_grad: PyTree,
@@ -235,28 +262,6 @@ class GymnaxLoop:
             mutable_metrics[MetricKey.LOSS] = loss
             mutable_metrics.update(cycle_result.metrics)
             return loss, dataclasses.replace(cycle_result, metrics=mutable_metrics, agent_state=agent_state)
-
-        @eqx.filter_grad(has_aux=True)
-        def _loss_for_cycle_grad(nets_yes_grad, nets_no_grad, other_agent_state) -> tuple[Scalar, ArrayMetrics]:
-            agent_state = dataclasses.replace(other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
-            loss, metrics = self._agent.loss(agent_state)
-            raise_if_metric_conflicts(metrics)
-            # inside jit, return values are guaranteed to be arrays
-            mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
-            mutable_metrics[MetricKey.LOSS] = loss
-            return loss, mutable_metrics
-
-        def _off_policy_update(
-            agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
-        ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
-            nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
-            grad, metrics = _loss_for_cycle_grad(
-                nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None)
-            )
-            grad_means = pytree_leaf_means(grad, "grad_mean")
-            metrics.update(grad_means)
-            agent_state = self._agent.optimize_from_grads(agent_state, grad)
-            return agent_state, metrics
 
         if not self._inference and not self._agent.num_off_policy_optims_per_cycle():
             # On-policy update. Calculate the gradient through the entire cycle.
@@ -283,7 +288,7 @@ class GymnaxLoop:
         metrics = cycle_result.metrics
         if not self._inference and self._agent.num_off_policy_optims_per_cycle():
             agent_state, off_policy_metrics = filter_scan(
-                _off_policy_update,
+                self._off_policy_update,
                 init=agent_state,
                 xs=None,
                 length=self._agent.num_off_policy_optims_per_cycle(),
@@ -412,3 +417,7 @@ class GymnaxLoop:
             trajectory,
             step_infos,
         )
+
+    def close(self):
+        """Currently just for consistency with GymnasiumLoop."""
+        pass
