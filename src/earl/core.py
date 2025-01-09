@@ -375,6 +375,9 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
         Sub-classes should override _select_action. This method is a wrapper that adds jit-compilation.
 
+        TODO: change interface to take in only _Networks and _StepState, which will let us avoid copying
+        those when doing inference on a different device.
+
         Args:
             state: The current agent state. Donated, so callers should not access it after calling.
             env_step: The current environment step. All fields are batched, so any vmap() should be done inside

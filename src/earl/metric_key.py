@@ -9,6 +9,14 @@ class MetricKey(enum.StrEnum):
 
     ACTION_COUNTS = enum.auto()
     DURATION_SEC = enum.auto()
+    INFERENCE_WAIT_DURATION_SEC = enum.auto()
+    """Time spent waiting for inference to complete.
+
+    Note with multiple devices this is the time that is NOT hidden by
+    overlapping inference and update.
+    """
+    UPDATE_DURATION_SEC = enum.auto()
+    """Time spent waiting for update to complete."""
     LOSS = enum.auto()
     REWARD_SUM = enum.auto()
     """Sum of reward across envs."""
