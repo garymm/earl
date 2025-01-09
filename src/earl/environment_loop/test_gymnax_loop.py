@@ -9,7 +9,7 @@ import pytest
 from jax_loop_utils.metric_writers import MemoryWriter
 from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 
-from research.earl.agents.uniform_random_agent import UniformRandom
+from research.earl.agents.random_agent.random_agent import RandomAgent
 from research.earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnax
 from research.earl.environment_loop import CycleResult
 from research.earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey, State
@@ -24,7 +24,7 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
     networks = None
     num_envs = 2
     key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env.action_space().sample, num_off_policy_updates)
+    agent = RandomAgent(env.action_space().sample, num_off_policy_updates)
     metric_writer = MemoryWriter()
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=inference)
     num_cycles = 2
@@ -70,7 +70,7 @@ def test_run_with_state():
     num_envs = 2
     obs, env_state = jax.vmap(env.reset)(jax.random.split(jax.random.PRNGKey(0), num_envs))
     key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env.action_space().sample, 1)
+    agent = RandomAgent(env.action_space().sample, 1)
     env.reset = mock.Mock(spec=env.reset)
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter())
     agent_state = agent.new_state(None, env_info_from_gymnax(env, env_params, num_envs), jax.random.PRNGKey(0))
@@ -96,7 +96,7 @@ def test_run_with_state():
 def test_bad_args():
     num_envs = 2
     env, env_params = gymnax.make("CartPole-v1")
-    agent = UniformRandom(env.action_space().sample, 0)
+    agent = RandomAgent(env.action_space().sample, 0)
     loop = GymnaxLoop(env, env_params, agent, num_envs, jax.random.PRNGKey(0), metric_writer=NoOpWriter())
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
@@ -112,7 +112,7 @@ def test_bad_metric_key():
     num_envs = 2
     key_gen = keygen(jax.random.PRNGKey(0))
     # make the agent return a metric with a key that conflicts with a built-in metric.
-    agent = UniformRandom(env.action_space().sample, 0)
+    agent = RandomAgent(env.action_space().sample, 0)
     agent = dataclasses.replace(agent, _prng_metric_key=MetricKey.DURATION_SEC)
 
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter())
@@ -133,14 +133,14 @@ def test_continuous_action_space():
     assert isinstance(action_space, gymnax.environments.spaces.Box)
     assert isinstance(action_space.low, jax.Array)
     assert isinstance(action_space.high, jax.Array)
-    agent = UniformRandom(action_space.sample, 0)
+    agent = RandomAgent(action_space.sample, 0)
     metric_writer = MemoryWriter()
     loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=True)
     num_cycles = 1
     steps_per_cycle = 1
     env_info = env_info_from_gymnax(env, env_params, num_envs)
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
-    _ = loop.run(agent_state, num_cycles, steps_per_cycle)
+    loop.run(agent_state, num_cycles, steps_per_cycle)
     for _, v in metric_writer.scalars.items():
         for k in v:
             assert not k.startswith("action_counts_")
@@ -151,7 +151,7 @@ def test_observe_cycle():
     networks = None
     num_envs = 2
     key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env.action_space().sample, 0)
+    agent = RandomAgent(env.action_space().sample, 0)
     num_cycles = 2
     steps_per_cycle = 3
     env_info = env_info_from_gymnax(env, env_params, num_envs)
@@ -174,6 +174,6 @@ def test_observe_cycle():
         inference=True,
         observe_cycle=observe_cycle,
     )
-    _ = loop.run(agent_state, num_cycles, steps_per_cycle)
+    loop.run(agent_state, num_cycles, steps_per_cycle)
     for _, v in metric_writer.scalars.items():
         assert v.get("ran", False)

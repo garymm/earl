@@ -22,8 +22,8 @@ class OptState(NamedTuple):
 AgentState = CoreAgentState[None, OptState, None, StepState]
 
 
-class UniformRandom(Agent[None, OptState, None, StepState]):
-    """Agent that selects actions uniformly at random."""
+class RandomAgent(Agent[None, OptState, None, StepState]):
+    """Agent that selects actions at random."""
 
     _sample_action_space: Callable
     _num_off_policy_updates: int

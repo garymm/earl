@@ -17,7 +17,7 @@ from gymnax.environments.environment import Environment as GymnaxEnv
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 from jaxtyping import PyTree
 
-from research.earl.agents.uniform_random_agent import UniformRandom
+from research.earl.agents.random_agent.random_agent import RandomAgent
 from research.earl.core import Agent, Image, Metrics, env_info_from_gymnasium
 from research.earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from research.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, MetricWriters
@@ -88,7 +88,7 @@ def test_run_experiment_no_eval_cycles(env_backend: str, num_eval_cycles: int):
         env_params = None
         action_space = env_info_from_gymnasium(env, 1).action_space
 
-    agent = UniformRandom(action_space.sample, 1)
+    agent = RandomAgent(action_space.sample, 1)
     experiment = FakeExperimentConfig(
         env_obj=env,
         agent_obj=agent,
@@ -100,7 +100,7 @@ def test_run_experiment_no_eval_cycles(env_backend: str, num_eval_cycles: int):
         steps_per_cycle=2,
     )
 
-    _ = run_experiment(experiment)
+    run_experiment(experiment)
 
     # Verify train metrics
     train_metrics = experiment.train_writer.scalars
@@ -135,7 +135,7 @@ def test_restore_with_no_checkpoint(env_backend: str, tmp_path):
         env_params = None
         action_space = env_info_from_gymnasium(env, 1).action_space
 
-    agent = UniformRandom(action_space.sample, 0)
+    agent = RandomAgent(action_space.sample, 0)
     max_to_keep = 2
     checkpoint_manager_options = ocp.CheckpointManagerOptions(save_interval_steps=1, max_to_keep=max_to_keep)
     checkpoints_dir = tmp_path / "checkpoints"
@@ -173,7 +173,7 @@ def test_checkpointing(env_backend: str, tmp_path):
             action_space = env_info_from_gymnasium(env, 1).action_space
         return FakeExperimentConfig(
             env_obj=env,
-            agent_obj=UniformRandom(action_space.sample, 1),
+            agent_obj=RandomAgent(action_space.sample, 1),
             env=env_params,
             num_eval_cycles=num_eval_cycles,
             num_train_cycles=10,
@@ -261,7 +261,7 @@ def test_error_on_restore_only_no_training(env_backend: str):
         env_params = None
         action_space = env_info_from_gymnasium(env, 1).action_space
 
-    agent = UniformRandom(action_space.sample, 0)
+    agent = RandomAgent(action_space.sample, 0)
     with pytest.raises(ValueError, match="num_train_cycles must be positive"):
         FakeExperimentConfig(
             env_obj=env,
@@ -304,7 +304,7 @@ def test_run_experiment_closes_loops():
     env = gymnasium.make("CartPole-v1")
     action_space = env_info_from_gymnasium(env, 1).action_space
 
-    agent = UniformRandom(action_space.sample, 1)
+    agent = RandomAgent(action_space.sample, 1)
     experiment = FakeExperimentConfig(
         env_obj=env,
         agent_obj=agent,

@@ -9,7 +9,7 @@ from gymnasium.envs.classic_control.pendulum import PendulumEnv
 from gymnax.environments.spaces import Discrete
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
-from research.earl.agents.uniform_random_agent import UniformRandom
+from research.earl.agents.random_agent.random_agent import RandomAgent
 from research.earl.core import ConflictingMetricError, Metrics, env_info_from_gymnasium
 from research.earl.environment_loop import CycleResult
 from research.earl.environment_loop.gymnasium_loop import GymnasiumLoop
@@ -26,7 +26,7 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
     env_info = env_info_from_gymnasium(env, num_envs)
     networks = None
     key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env_info.action_space.sample, num_off_policy_updates)
+    agent = RandomAgent(env_info.action_space.sample, num_off_policy_updates)
     metric_writer = MemoryWriter()
     if not inference and not num_off_policy_updates:
         with pytest.raises(ValueError, match="On-policy training is not supported in GymnasiumLoop."):
@@ -80,7 +80,7 @@ def test_bad_args():
     num_envs = 2
     env = CartPoleEnv()
     env_info = env_info_from_gymnasium(env, num_envs)
-    agent = UniformRandom(env_info.action_space.sample, 0)
+    agent = RandomAgent(env_info.action_space.sample, 0)
     metric_writer = MemoryWriter()
     loop = GymnasiumLoop(env, agent, num_envs, jax.random.PRNGKey(0), metric_writer=metric_writer, inference=True)
     agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
@@ -97,7 +97,7 @@ def test_bad_metric_key():
     env_info = env_info_from_gymnasium(env, num_envs)
     key_gen = keygen(jax.random.PRNGKey(0))
     # make the agent return a metric with a key that conflicts with a built-in metric.
-    agent = UniformRandom(env_info.action_space.sample, 1)
+    agent = RandomAgent(env_info.action_space.sample, 1)
     agent = dataclasses.replace(agent, _prng_metric_key=MetricKey.DURATION_SEC)
 
     metric_writer = MemoryWriter()
@@ -119,13 +119,13 @@ def test_continuous_action_space():
     assert isinstance(action_space, gymnax.environments.spaces.Box)
     assert isinstance(action_space.low, jax.Array)
     assert isinstance(action_space.high, jax.Array)
-    agent = UniformRandom(action_space.sample, 0)
+    agent = RandomAgent(action_space.sample, 0)
     metric_writer = MemoryWriter()
     loop = GymnasiumLoop(env, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=True)
     num_cycles = 1
     steps_per_cycle = 1
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
-    _ = loop.run(agent_state, num_cycles, steps_per_cycle)
+    loop.run(agent_state, num_cycles, steps_per_cycle)
     for _, v in metric_writer.scalars.items():
         for k in v:
             assert not k.startswith("action_counts_")
@@ -137,7 +137,7 @@ def test_observe_cycle():
     env_info = env_info_from_gymnasium(env, num_envs)
     networks = None
     key_gen = keygen(jax.random.PRNGKey(0))
-    agent = UniformRandom(env_info.action_space.sample, 0)
+    agent = RandomAgent(env_info.action_space.sample, 0)
     metric_writer = MemoryWriter()
 
     def observe_cycle(cycle_result: CycleResult) -> Metrics:
@@ -152,6 +152,6 @@ def test_observe_cycle():
     steps_per_cycle = 3
     agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
 
-    _ = loop.run(agent_state, num_cycles, steps_per_cycle)
+    loop.run(agent_state, num_cycles, steps_per_cycle)
     for _, v in metric_writer.scalars.items():
         assert v.get("ran", False)
