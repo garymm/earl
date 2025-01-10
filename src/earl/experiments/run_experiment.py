@@ -158,7 +158,6 @@ def _new_gymnasium_loop(
 
 def run_experiment(config: ExperimentConfig) -> LoopResult:
     """Runs an experiment as specified in config."""
-
     agent = config.new_agent()
     key = jax.random.PRNGKey(config.random_seed)
     env = config.new_env()

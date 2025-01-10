@@ -180,11 +180,11 @@ def _loss_jit(
 
 
 def _convert_gymnasium_space_to_gymnax_space(gym_space: gym_spaces.Space) -> gymnax_spaces.Space:
-    """
-    Convert a Gymnasium space into a Gymnax space.
+    """Convert a Gymnasium space into a Gymnax space.
 
     Args:
         gym_space: The Gymnasium space to convert.
+
     """
     dtype = jnp.dtype(gym_space.dtype)
     if isinstance(gym_space, gym_spaces.Box):
@@ -283,6 +283,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
             key: a PRNG key. Used to generate keys for hidden, opt, and experience.
                 Donated, so callers should not access it after calling.
             inference: if True, initialize the state for inference (opt and experience are None).
+
         """
 
         # helper funcion to wrap with jit.
@@ -321,8 +322,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
             nets: the agent's neural networks.
             env_info: info about the environment.
             key: a PRNG key.
-        """
 
+        """
         return eqx.filter_jit(self._new_step_state)(nets, env_info, key)
 
     @abc.abstractmethod
@@ -339,6 +340,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
             nets: the agent's neural networks.
             env_info: info about the environment.
             key: a PRNG key.
+
         """
         return eqx.filter_jit(self._new_experience_state)(nets, env_info, key)
 
@@ -358,6 +360,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
             nets: the agent's neural networks.
             env_info: info about the environment.
             key: a PRNG key.
+
         """
         return eqx.filter_jit(self._new_opt_state)(nets, env_info, key)
 
@@ -385,6 +388,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
         Returns:
             AgentStep which contains the batch of actions and the updated hidden state.
+
         """
         # swap order of args so we can avoid donating env_step
         return _step_jit(env_step, state, self._step)
@@ -412,8 +416,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
         Returns:
             The updated experience.
-        """
 
+        """
         exp = state.experience
         agent_state_no_exp = replace(state, experience=None)
         return _update_experience_jit((agent_state_no_exp, trajectory), exp, self._update_experience)
@@ -479,6 +483,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
             state: The current agent state. Donated, so callers should not access it after calling.
             nets_grads is the gradient of the loss w.r.t. the agent's networks. Donated,
                 so callers should not access it after calling.
+
         """
         return _optimize_from_grads_jit(state, nets_grads, self._optimize_from_grads)
 

@@ -94,6 +94,7 @@ class GymnaxLoop:
                 of length steps_per_cycle and runs any custom logic on it.
             inference: If False, agent.update_for_cycle() will not be called.
             assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
+
         """
         self._env = env
         sample_key, key = jax.random.split(key)
@@ -160,6 +161,7 @@ class GymnaxLoop:
         Returns:
             The final loop state and a dictionary of metrics.
             Each metric is a list of length num_cycles. All returned metrics are per-cycle.
+
         """
         if num_cycles <= 0:
             raise ValueError("num_cycles must be positive.")

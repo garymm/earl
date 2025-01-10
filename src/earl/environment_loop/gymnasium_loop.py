@@ -299,6 +299,7 @@ class GymnasiumLoop:
         Returns:
             The final loop state and a dictionary of metrics.
             Each metric is a list of length num_cycles. All returned metrics are per-cycle.
+
         """
         if num_cycles <= 0:
             raise ValueError("num_cycles must be positive.")

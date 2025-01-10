@@ -11,11 +11,15 @@ from research.earl.core import AgentState as CoreAgentState
 
 
 class StepState(NamedTuple):
+    """State that gets updated on every step."""
+
     key: PRNGKeyArray
     t: jax.Array
 
 
 class OptState(NamedTuple):
+    """State that gets updated on every optimization step."""
+
     opt_count: jax.Array
 
 
@@ -62,4 +66,5 @@ class RandomAgent(Agent[None, OptState, None, StepState]):
         return None
 
     def num_off_policy_optims_per_cycle(self) -> int:
+        """Number of off-policy updates per cycle."""
         return self._num_off_policy_updates
