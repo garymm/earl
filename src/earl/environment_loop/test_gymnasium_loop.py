@@ -213,6 +213,9 @@ def test_inference_update_different_devices(caplog):
     num_cycles = 2
     steps_per_cycle = 10
     agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
+    # the default agent_state has nets=None.
+    # We set it to an array to check for use-after-donation bugs.
+    agent_state = dataclasses.replace(agent_state, nets=jax.numpy.ones((1,)))
     caplog.set_level(logging.WARNING)
     loop.run(agent_state, num_cycles, steps_per_cycle)
     assert "inference is much slower than update" in caplog.text

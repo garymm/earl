@@ -11,7 +11,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from equinox._filters import combine, is_array, partition
 from gymnasium.core import Env as GymnasiumEnv
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 from gymnasium.wrappers import Autoreset
@@ -96,19 +95,21 @@ def _filter_device_put(x: PyTree[typing.Any], device: jax.Device | None):
 
     A copy of `x` with the specified device.
     """
-    dynamic, static = partition(x, is_array)
+    dynamic, static = eqx.partition(x, eqx.is_array)
     dynamic = jax.device_put(dynamic, device)
-    return combine(dynamic, static)
+    return eqx.combine(dynamic, static)
 
 
 class _InferenceThread(threading.Thread):
     def __init__(
         self,
-        target: typing.Callable[..., CycleResult],
-        args: tuple,
-        kwargs: dict | None = None,
-        run_on_device: jax.Device | None = None,
-        copy_back_to_device: jax.Device | None = None,
+        target: typing.Callable[[AgentState, EnvStep, int, PRNGKeyArray], CycleResult],
+        agent_state: AgentState,
+        env_step: EnvStep,
+        num_steps: int,
+        key: PRNGKeyArray,
+        run_on_device: jax.Device,
+        copy_back_to_device: jax.Device,
         fake_thread: bool = False,
     ):
         """Initializes the _RunInferenceThread.
@@ -122,20 +123,29 @@ class _InferenceThread(threading.Thread):
             fake_thread: Whether to fake the thread.
                Python debugger can't handle threads, so when debugging this can be very helpful.
         """
-        super().__init__(target=target, args=args, kwargs=kwargs)
+        super().__init__()
+        self._target = target
+        self._agent_state = agent_state
+        self._env_step = env_step
+        self._num_steps = num_steps
+        self._key = key
         self._result: CycleResult | None = None
         self._run_on_device = run_on_device
         self._copy_back_to_device = copy_back_to_device
         self._fake_thread = fake_thread
 
     def run(self):
-        args = _filter_device_put(self._args, self._run_on_device)  # pyright: ignore[reportAttributeAccessIssue]
+        agent_state, env_step, num_steps, key = _filter_device_put(
+            (self._agent_state, self._env_step, self._num_steps, self._key), self._run_on_device
+        )
         with jax.default_device(self._run_on_device):
-            self._result = self._target(*args, **self._kwargs)  # pyright: ignore[reportAttributeAccessIssue]
-
-        if self._copy_back_to_device:
-            self._result = _filter_device_put(self._result, self._copy_back_to_device)
-        self._result = jax.block_until_ready(self._result)
+            self._result = self._target(agent_state, env_step, num_steps, key)
+        assert self._result is not None
+        # don't copy the nets back to the update device
+        self._result = dataclasses.replace(
+            self._result, agent_state=dataclasses.replace(self._result.agent_state, nets=None)
+        )
+        self._result = _filter_device_put(self._result, self._copy_back_to_device)
 
     def start(self):
         if self._fake_thread:
@@ -310,8 +320,10 @@ class GymnasiumLoop:
             state = State(state)
 
         agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference_only)
-
-        env_step = self.reset_env()
+        # everything needs to start on the update device
+        agent_state = _filter_device_put(agent_state, self._update_device)
+        env_step = _filter_device_put(self.reset_env(), self._update_device)
+        self._key = jax.device_put(self._key, self._update_device)
 
         step_num_metric_start = state.step_num
         del state
@@ -321,38 +333,43 @@ class GymnasiumLoop:
             cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
 
         env_state = typing.cast(EnvState, None)
-        inference_thread = _InferenceThread(
-            target=self._inference_cycle,
-            # avoid copying the unnecessary state to the inference device
-            args=(dataclasses.replace(agent_state, experience=None, opt=None), env_step, steps_per_cycle, self._key),
-            run_on_device=self._inference_device,
-            copy_back_to_device=self._update_device,
-        )
-        inference_thread.start()
+        if self._inference_device != self._update_device:
+            inference_thread = _InferenceThread(
+                self._inference_cycle,
+                # avoid copying the unnecessary state to the inference device
+                dataclasses.replace(agent_state, experience=None, opt=None),
+                env_step,
+                steps_per_cycle,
+                self._key,
+                self._inference_device,
+                self._update_device,
+            )
+            inference_thread.start()
+        else:
+            inference_thread = None
+        inference_wait_duration = 0
         for cycle_num in cycles_iter:
             cycle_start = time.monotonic()
-            inference_result = inference_thread.join_and_return()
-            inference_wait_duration = time.monotonic() - cycle_start
-            experience_state = agent_state.experience
-            opt_state = agent_state.opt
-            if cycle_num < num_cycles - 1:
-                # _run_cycle always uses the agent state from the previous cycle.
-                # On cycle 0, agent_state was donated but not yet updated, so we use the inference_result.
-                agent_state_for_cycle = agent_state if cycle_num else copy.deepcopy(inference_result.agent_state)
-
-                inference_thread = _InferenceThread(
-                    target=self._inference_cycle,
-                    args=(
-                        dataclasses.replace(agent_state_for_cycle, experience=None, opt=None),
+            agent_state_for_inference = dataclasses.replace(agent_state, experience=None, opt=None)
+            if inference_thread:
+                inference_result = inference_thread.join_and_return()
+                inference_wait_duration = time.monotonic() - cycle_start
+                if cycle_num < num_cycles - 1:
+                    inference_thread = _InferenceThread(
+                        self._inference_cycle,
+                        agent_state_for_inference,
                         env_step,
                         steps_per_cycle,
                         self._key,
-                    ),
-                    run_on_device=self._inference_device,
-                    copy_back_to_device=self._update_device,
+                        self._inference_device,
+                        self._update_device,
+                    )
+                    inference_thread.start()
+            else:
+                inference_result = self._inference_cycle(
+                    agent_state_for_inference, env_step, steps_per_cycle, self._key
                 )
-                inference_thread.start()
-            agent_state = dataclasses.replace(inference_result.agent_state, experience=experience_state, opt=opt_state)
+            agent_state = dataclasses.replace(agent_state, step=inference_result.agent_state.step)
             cycle_result = dataclasses.replace(inference_result, agent_state=agent_state)
 
             if self._inference_only:
