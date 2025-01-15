@@ -174,18 +174,27 @@ class MetricsByType:
     video: dict[str, jax.Array]
 
 
-def extract_metrics(cycle_result: CycleResult, observe_cycle_metrics: Metrics) -> MetricsByType:
+def extract_metrics(cycle_result_metrics: ArrayMetrics, observe_cycle_metrics: Metrics) -> MetricsByType:
     """Extracts scalar and image metrics from a CycleResult and observe_cycle_metrics."""
     scalar_metrics: dict[str, float | int] = {}
     image_metrics: dict[str, jax.Array] = {}
     video_metrics: dict[str, jax.Array] = {}
-    action_counts = cycle_result.metrics.pop(MetricKey.ACTION_COUNTS)
+    # handle pmap case. Choice of metric to check is arbitrary.
+    has_device_dim = cycle_result_metrics[MetricKey.REWARD_SUM].ndim > 0
+    if has_device_dim:
+        for k in cycle_result_metrics:
+            if "mean" in k:
+                cycle_result_metrics[k] = jnp.mean(cycle_result_metrics[k], axis=0)
+            else:
+                cycle_result_metrics[k] = jnp.sum(cycle_result_metrics[k], axis=0)
+
+    action_counts = cycle_result_metrics.pop(MetricKey.ACTION_COUNTS)
     assert isinstance(action_counts, jax.Array)
     if action_counts.shape:  # will be empty tuple if not discrete action space
         for i in range(action_counts.shape[0]):
             scalar_metrics[f"action_counts/{i}"] = int(action_counts[i])
 
-    for k, v in cycle_result.metrics.items():
+    for k, v in cycle_result_metrics.items():
         assert v.shape == (), f"Expected scalar metric {k} to be scalar, got {v.shape}"
         scalar_metrics[k] = v.item()
 

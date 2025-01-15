@@ -11,10 +11,3 @@ Earl supports only JAX agents.
 For pure JAX environments, Earl supports the [Gymnax](https://github.com/RobertTLange/gymnax/blob/main/gymnax/environments/environment.py) interface.
 For other environments, Earl will support the [Gymnasium](https://gymnasium.farama.org/api/env/) interface.
 
-## TODO
-
-- Add support for data parallel training use [pmean](https://astralord.github.io/posts/exploring-parallel-strategies-with-jax/#data-parallelism)
-- Add support for saving evaluation observations to a video file.
-- Add gymnasium loop:
-  - Multi-threaded to overlap model forward, data copying, and envs step. Basically steal ideas from podracers Sebulba.
-- Add builders, based on [Acme](https://github.com/google-deepmind/acme/blob/master/acme/agents/jax/builders.py).

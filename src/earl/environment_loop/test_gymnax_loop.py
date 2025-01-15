@@ -77,15 +77,16 @@ def test_run_with_state():
     initial_step_num = 2
     prev_action = jax.vmap(env.action_space(None).sample)(jax.random.split(jax.random.PRNGKey(0), num_envs))
     assert isinstance(prev_action, jax.Array)
+    env_step = EnvStep(
+        new_episode=jnp.zeros((num_envs,), dtype=jnp.bool),
+        obs=obs,
+        prev_action=prev_action,
+        reward=jnp.zeros((num_envs,)),
+    )
     state = State(
-        agent_state,
-        env_state,
-        EnvStep(
-            new_episode=jnp.zeros((num_envs,), dtype=jnp.bool),
-            obs=obs,
-            prev_action=prev_action,
-            reward=jnp.zeros((num_envs,)),
-        ),
+        agent_state=jax.device_put_replicated(agent_state, devices=jax.local_devices()),
+        env_state=jax.device_put_replicated(env_state, devices=jax.local_devices()),
+        env_step=jax.device_put_replicated(env_step, devices=jax.local_devices()),
         step_num=initial_step_num,
     )
     steps_per_cycle = 10

@@ -152,12 +152,24 @@ def _new_gymnasium_loop(
     observe_cycle: ObserveCycle = no_op_observe_cycle,
     inference: bool = False,
     assert_no_recompile: bool = True,
+    devices: list[jax.Device] | None = None,
 ) -> GymnasiumLoop:
-    return GymnasiumLoop(env, agent, num_envs, key, metric_writer, observe_cycle, inference, assert_no_recompile)
+    return GymnasiumLoop(
+        env,
+        agent,
+        num_envs,
+        key,
+        metric_writer,
+        observe_cycle,
+        inference=inference,
+        assert_no_recompile=assert_no_recompile,
+        devices=devices,
+    )
 
 
 def run_experiment(config: ExperimentConfig) -> LoopResult:
     """Runs an experiment as specified in config."""
+
     agent = config.new_agent()
     key = jax.random.PRNGKey(config.random_seed)
     env = config.new_env()
@@ -186,6 +198,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
             )["num_envs"]
             num_envs = int(num_envs)
 
+    devices = config.jax_devices()
     if isinstance(env, GymnasiumEnv):
         env_info = env_info_from_gymnasium(env, config.num_envs)
         loop_factory = _new_gymnasium_loop
@@ -202,10 +215,13 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
         train_key,
         metric_writer=train_metric_writer,
         observe_cycle=train_observe_cycle,
+        devices=devices,
     )
 
     train_agent_state = agent.new_state(networks, env_info, train_key)
     del networks
+
+    train_agent_state = train_loop.replicate(train_agent_state)
 
     train_loop_state = LoopState(train_agent_state)
     del train_agent_state
