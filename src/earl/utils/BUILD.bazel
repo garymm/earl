@@ -1,0 +1,20 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+
+py_library(
+    name = "prng",
+    srcs = ["prng.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@pypi//jax",
+    ],
+)
+
+py_library(
+    name = "eqx_filter",
+    srcs = ["eqx_filter.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@pypi//equinox",
+        "@pypi//jax",
+    ],
+)

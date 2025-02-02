@@ -1,0 +1,33 @@
+"""https://bazel.build/external/module"""
+
+module(
+    name = "earl",
+    version = "0.0.0",
+)
+
+# BEGIN python toolchain
+_PYTHON_VERSION = "3.12"
+bazel_dep(name = "rules_python", version = "1.1.0", dev_dependency = True)
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    configure_coverage_tool = True,
+    python_version = _PYTHON_VERSION,
+)
+# END python toolchain
+
+# BEGIN python dependencies
+bazel_dep(name = "rules_uv", version = "0.53.0", dev_dependency = True)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+
+# TODO: figure out how to support multiple platforms
+pip.parse(
+    hub_name = "pypi",
+    python_version = _PYTHON_VERSION,
+    requirements_lock = "//:requirements_linux_x86_64.txt",
+)
+use_repo(pip, "pypi")
+# END python dependencies
+
+bazel_dep(name = "aspect_rules_py", version = "1.3.1")

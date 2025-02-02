@@ -1,0 +1,74 @@
+# https://python-poetry.org/docs/pyproject/
+[project]
+dependencies = [
+    "equinox>=0.11.11",
+    "gymnax",
+    "gymnasium>=1.0.0",
+    "jax_loop_utils",
+    "jax>=0.4.0",
+    "jaxtyping>=0.2.0",
+    "tqdm>=4.0.0",
+]
+name = "earl"
+version = "0.0.0"
+description = "Reinforcement learning with Equinox."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Gary Miguel", email = "garymm@garymm.org" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["Equinox", "JAX", "Reinforcement Learning"]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0.0"]
+
+[project.urls]
+Homepage = "http://github.com/garymm/earl"
+
+[dependency-groups]
+dev = ["pyright==1.1.391", "ruff>=0.9.1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+exclude = ["test_*.py"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # Please only ignore warnings that come from a transitive dependency that we
+    # can't easily avoid.
+    # See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#controlling-warnings
+    # action:message:category:module:line
+    "error",
+]
+
+[tool.ruff]
+line-length = 120 # TODO: reduce to 100
+
+[tool.ruff.lint]
+select = [
+    "A",   # flake8-builtins
+    "B",   # flake8-bugbear
+    "E",   # pycodestyle
+    "F",   # Pyflakes
+    "I",   # isort
+    "PT",  # flake8-pytest-style
+    "SIM", # flake8-simplify
+    "UP",  # pyupgrade
+]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+
+[tool.uv.sources]
+gymnax = { git = "https://github.com/Astera-org/gymnax", rev = "c52a7dac7b41514297d2e98b1b288d56715a5165" }
+jax_loop_utils = { git = "https://github.com/Astera-org/jax_loop_utils", rev = "5cd50bfa0a6e42ccc7438fb556d80e1ec3074932" }

@@ -1,0 +1,7 @@
+{
+    "recommendations": [
+        "BazelBuild.vscode-bazel",
+        "charliermarsh.ruff",
+        "detachhead.basedpyright"
+    ]
+}
