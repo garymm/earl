@@ -1,0 +1,101 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library", "py_test")
+
+py_library(
+    name = "common",
+    srcs = ["_common.py"],
+    deps = [
+        "//src/earl:core",
+        "//src/earl:metric_key",
+        "@pypi//equinox",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jax_loop_utils",
+        "@pypi//jaxtyping",
+    ],
+)
+
+py_test(
+    name = "common_test",
+    srcs = ["test_common.py"],
+    deps = [
+        ":common",
+        "//src/earl:core",
+        "@pypi//jax",
+        "@pypi//pytest",
+    ],
+)
+
+py_library(
+    name = "environment_loop",
+    srcs = ["__init__.py"],
+    deps = [
+        ":common",
+    ],
+)
+
+py_library(
+    name = "gymnasium_loop",
+    srcs = ["gymnasium_loop.py"],
+    deps = [
+        ":common",
+        ":environment_loop",
+        "//src/earl:core",
+        "//src/earl:metric_key",
+        "//src/earl/utils:eqx_filter",
+        "@pypi//equinox",
+        "@pypi//gymnasium",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jaxtyping",
+        "@pypi//tqdm",
+    ],
+)
+
+py_test(
+    name = "gymnasium_loop_test",
+    srcs = ["test_gymnasium_loop.py"],
+    deps = [
+        ":gymnasium_loop",
+        "//src/earl:core",
+        "//src/earl:metric_key",
+        "//src/earl/agents/random_agent",
+        "//src/earl/utils:prng",
+        "@pypi//gymnasium",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//numpy",
+        "@pypi//pytest",
+    ],
+)
+
+py_library(
+    name = "gymnax_loop",
+    srcs = ["gymnax_loop.py"],
+    deps = [
+        ":common",
+        ":environment_loop",
+        "//src/earl:core",
+        "//src/earl:metric_key",
+        "//src/earl/utils:eqx_filter",
+        "@pypi//equinox",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jaxtyping",
+        "@pypi//tqdm",
+    ],
+)
+
+py_test(
+    name = "gymnax_loop_test",
+    srcs = ["test_gymnax_loop.py"],
+    deps = [
+        ":gymnax_loop",
+        "//src/earl:core",
+        "//src/earl:metric_key",
+        "//src/earl/agents/random_agent",
+        "//src/earl/utils:prng",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//pytest",
+    ],
+)

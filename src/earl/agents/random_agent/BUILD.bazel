@@ -1,0 +1,12 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+
+py_library(
+    name = "random_agent",
+    srcs = ["random_agent.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/earl:core",
+        "@pypi//jax",
+        "@pypi//jaxtyping",
+    ],
+)

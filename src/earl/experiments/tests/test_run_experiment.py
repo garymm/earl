@@ -17,17 +17,17 @@ from gymnax.environments.environment import Environment as GymnaxEnv
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 from jaxtyping import PyTree
 
-from research.earl.agents.random_agent.random_agent import RandomAgent
-from research.earl.core import Agent, Image, Metrics, env_info_from_gymnasium
-from research.earl.environment_loop.gymnasium_loop import GymnasiumLoop
-from research.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, MetricWriters
-from research.earl.experiments.run_experiment import (
+from src.earl.agents.random_agent.random_agent import RandomAgent
+from src.earl.core import Agent, Image, Metrics, env_info_from_gymnasium
+from src.earl.environment_loop.gymnasium_loop import GymnasiumLoop
+from src.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, MetricWriters
+from src.earl.experiments.run_experiment import (
     _config_to_dict,
     _new_checkpoint_manager,
     _restore_checkpoint,
     run_experiment,
 )
-from research.earl.metric_key import MetricKey
+from src.earl.metric_key import MetricKey
 
 
 class MockGymnasiumLoop(GymnasiumLoop):
@@ -341,7 +341,7 @@ def test_run_experiment_closes_loops():
             train_loop = loop
         return loop
 
-    with patch("research.earl.experiments.run_experiment._new_gymnasium_loop", mock_new_gymnasium_loop):
+    with patch("earl.experiments.run_experiment._new_gymnasium_loop", mock_new_gymnasium_loop):
         _ = run_experiment(experiment)
 
     assert train_loop is not None

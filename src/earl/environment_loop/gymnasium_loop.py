@@ -20,7 +20,7 @@ from jax_loop_utils.metric_writers.interface import MetricWriter
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
-from research.earl.core import (
+from src.earl.core import (
     Agent,
     AgentState,
     EnvStep,
@@ -30,7 +30,7 @@ from research.earl.core import (
     _StepState,
     env_info_from_gymnasium,
 )
-from research.earl.environment_loop import (
+from src.earl.environment_loop import (
     ArrayMetrics,
     CycleResult,
     ObserveCycle,
@@ -39,14 +39,14 @@ from research.earl.environment_loop import (
     StepCarry,
     no_op_observe_cycle,
 )
-from research.earl.environment_loop._common import (
+from src.earl.environment_loop._common import (
     extract_metrics,
     pytree_leaf_means,
     raise_if_metric_conflicts,
     to_num_envs_first,
 )
-from research.earl.metric_key import MetricKey
-from research.utils.eqx_filter import filter_scan
+from src.earl.metric_key import MetricKey
+from src.earl.utils.eqx_filter import filter_scan
 
 _logger = logging.getLogger(__name__)
 

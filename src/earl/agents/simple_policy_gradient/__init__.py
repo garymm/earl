@@ -7,8 +7,8 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from research.earl.core import Agent, AgentStep, EnvInfo, EnvStep, Metrics
-from research.earl.core import AgentState as CoreAgentState
+from src.earl.core import Agent, AgentStep, EnvInfo, EnvStep, Metrics
+from src.earl.core import AgentState as CoreAgentState
 
 
 class StepState(eqx.Module):

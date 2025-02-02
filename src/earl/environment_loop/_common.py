@@ -11,7 +11,7 @@ from gymnax import EnvState
 from jax_loop_utils.metric_writers.interface import Scalar as ScalarMetric
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from research.earl.core import (
+from src.earl.core import (
     AgentState,
     ConflictingMetricError,
     EnvStep,
@@ -23,7 +23,7 @@ from research.earl.core import (
     _OptState,
     _StepState,
 )
-from research.earl.metric_key import MetricKey
+from src.earl.metric_key import MetricKey
 
 ArrayMetrics = dict[str, jax.Array]
 
@@ -207,7 +207,7 @@ def extract_metrics(cycle_result: CycleResult, observe_cycle_metrics: Metrics) -
 def pixel_obs_to_video_observe_cycle(cycle_result: CycleResult) -> Metrics:
     obs = cycle_result.trajectory.obs
     if len(obs.shape) not in (4, 5):
-        raise ValueError(f"Expected trajectory.obs to have shape (T, H, W, C) or (B, T, H, W, C)," f"got {obs.shape}")
+        raise ValueError(f"Expected trajectory.obs to have shape (T, H, W, C) or (B, T, H, W, C),got {obs.shape}")
     if len(obs.shape) == 4:
         return {"video": Video(obs)}
     else:

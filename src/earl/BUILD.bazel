@@ -1,0 +1,20 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+
+py_library(
+    name = "core",
+    srcs = ["core.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@pypi//equinox",
+        "@pypi//gymnasium",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jaxtyping",
+    ],
+)
+
+py_library(
+    name = "metric_key",
+    srcs = ["metric_key.py"],
+    visibility = ["//visibility:public"],
+)
