@@ -1,0 +1,31 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library", "py_test")
+
+py_library(
+    name = "simple_policy_gradient",
+    srcs = ["simple_policy_gradient.py"],
+    deps = [
+        "//earl:core",
+        "@pypi//equinox",
+        "@pypi//jax",
+        "@pypi//jaxtyping",
+        "@pypi//optax",
+    ],
+)
+
+py_test(
+    name = "test_simple_policy_gradient",
+    timeout = "short",
+    srcs = ["test_simple_policy_gradient.py"],
+    deps = [
+        ":simple_policy_gradient",
+        "//earl:core",
+        "//earl/environment_loop:gymnax_loop",
+        "@pypi//absl_py",
+        "@pypi//equinox",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jax_loop_utils",
+        "@pypi//numpy",
+        "@pypi//optax",
+    ],
+)

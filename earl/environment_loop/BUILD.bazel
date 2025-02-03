@@ -15,27 +15,28 @@ py_library(
 )
 
 py_test(
-    name = "common_test",
+    name = "test_common",
+    timeout = "short",
     srcs = ["test_common.py"],
     deps = [
         ":common",
         "//earl:core",
+        "@pypi//absl_py",
         "@pypi//jax",
-        "@pypi//pytest",
     ],
 )
 
 py_library(
     name = "environment_loop",
     srcs = ["__init__.py"],
-    deps = [
-        ":common",
-    ],
+    visibility = ["//visibility:public"],
+    deps = [":common"],
 )
 
 py_library(
     name = "gymnasium_loop",
     srcs = ["gymnasium_loop.py"],
+    visibility = ["//visibility:public"],
     deps = [
         ":common",
         ":environment_loop",
@@ -52,7 +53,8 @@ py_library(
 )
 
 py_test(
-    name = "gymnasium_loop_test",
+    name = "test_gymnasium_loop",
+    timeout = "short",
     srcs = ["test_gymnasium_loop.py"],
     deps = [
         ":gymnasium_loop",
@@ -60,17 +62,18 @@ py_test(
         "//earl:metric_key",
         "//earl/agents/random_agent",
         "//earl/utils:prng",
+        "@pypi//absl_py",
         "@pypi//gymnasium",
         "@pypi//gymnax",
         "@pypi//jax",
         "@pypi//numpy",
-        "@pypi//pytest",
     ],
 )
 
 py_library(
     name = "gymnax_loop",
     srcs = ["gymnax_loop.py"],
+    visibility = ["//visibility:public"],
     deps = [
         ":common",
         ":environment_loop",
@@ -86,7 +89,8 @@ py_library(
 )
 
 py_test(
-    name = "gymnax_loop_test",
+    name = "test_gymnax_loop",
+    timeout = "short",
     srcs = ["test_gymnax_loop.py"],
     deps = [
         ":gymnax_loop",
@@ -94,8 +98,8 @@ py_test(
         "//earl:metric_key",
         "//earl/agents/random_agent",
         "//earl/utils:prng",
+        "@pypi//absl_py",
         "@pypi//gymnax",
         "@pypi//jax",
-        "@pypi//pytest",
     ],
 )

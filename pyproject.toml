@@ -27,7 +27,7 @@ classifiers = [
 keywords = ["Equinox", "JAX", "Reinforcement Learning"]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0.0"]
+test = ["absl-py>=2.1.0"]
 
 [project.urls]
 Homepage = "http://github.com/garymm/earl"
@@ -61,7 +61,6 @@ select = [
     "E",   # pycodestyle
     "F",   # Pyflakes
     "I",   # isort
-    "PT",  # flake8-pytest-style
     "SIM", # flake8-simplify
     "UP",  # pyupgrade
 ]
