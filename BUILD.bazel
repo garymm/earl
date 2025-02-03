@@ -1,4 +1,3 @@
-load("@buildifier_prebuilt//:rules.bzl", "buildifier")
 load("@rules_uv//uv:pip.bzl", "pip_compile")
 load("@rules_uv//uv:venv.bzl", "create_venv")
 
@@ -21,22 +20,15 @@ create_venv(
     requirements_txt = ":requirements_linux_x86_64.txt",
 )
 
-buildifier(
-    name = "buildifier.check",
-    exclude_patterns = [
-        "./.git/*",
-        "./.venv/*",
-    ],
-    lint_mode = "warn",
-    mode = "diff",
+# NB: this alias does NOT cause Bazel's Loading phase to load the tools/BUILD file.
+# That's important as we don't want users to wait for "Eager fetching" for ~EVERY language which
+# that build file loads from.
+alias(
+    name = "format",
+    actual = "//tools:format",
 )
 
-buildifier(
-    name = "buildifier.fix",
-    exclude_patterns = [
-        "./.git/*",
-        "./.venv/*",
-    ],
-    lint_mode = "warn",
-    mode = "fix",
+alias(
+    name = "format.check",
+    actual = "//tools:format.check",
 )
