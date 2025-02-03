@@ -32,3 +32,5 @@ alias(
     name = "format.check",
     actual = "//tools:format.check",
 )
+
+exports_files(["pyproject.toml"])

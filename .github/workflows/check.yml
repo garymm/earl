@@ -87,3 +87,35 @@ jobs:
             --bazelrc=.github/workflows/ci.bazelrc \
             run \
             //:format.check
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set buildbuddy-api-key
+        run: |
+          echo 'build --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_API_KEY }}' >> .bazelrc
+
+      - name: set bazel upload flags
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo 'build --noremote_upload_local_results' >> .bazelrc
+
+      - name: mount bazel other caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            "~/.cache/bazel_install_base"
+            "~/.cache/bazel_output_base"
+            "~/.cache/bazel_repository_cache"
+            "~/.cache/bazelisk"
+          key: bazel-other
+
+      - run: |
+          bazel \
+            --bazelrc=.github/workflows/ci.bazelrc \
+            build \
+            --aspects=//tools:linters.bzl%ruff \
+            --@aspect_rules_lint//lint:fail_on_violation \
+            //...
