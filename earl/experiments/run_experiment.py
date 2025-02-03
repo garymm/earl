@@ -12,14 +12,14 @@ from jax_loop_utils.metric_writers import KeepLastWriter
 from jax_loop_utils.metric_writers.interface import MetricWriter
 from jaxtyping import PRNGKeyArray
 
-from src.earl.core import Agent, env_info_from_gymnasium, env_info_from_gymnax
-from src.earl.environment_loop import ObserveCycle, no_op_observe_cycle
-from src.earl.environment_loop.gymnasium_loop import GymnasiumLoop
-from src.earl.environment_loop.gymnax_loop import GymnaxLoop
-from src.earl.environment_loop.gymnax_loop import Result as LoopResult
-from src.earl.environment_loop.gymnax_loop import State as LoopState
-from src.earl.experiments.config import CheckpointRestoreMode, ExperimentConfig
-from src.earl.metric_key import MetricKey
+from earl.core import Agent, env_info_from_gymnasium, env_info_from_gymnax
+from earl.environment_loop import ObserveCycle, no_op_observe_cycle
+from earl.environment_loop.gymnasium_loop import GymnasiumLoop
+from earl.environment_loop.gymnax_loop import GymnaxLoop
+from earl.environment_loop.gymnax_loop import Result as LoopResult
+from earl.environment_loop.gymnax_loop import State as LoopState
+from earl.experiments.config import CheckpointRestoreMode, ExperimentConfig
+from earl.metric_key import MetricKey
 
 
 def _checkpoint_save_args(agent: Agent, env_params: Any, state: LoopResult) -> ocp.args.CheckpointArgs:

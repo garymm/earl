@@ -9,11 +9,11 @@ import pytest
 from jax_loop_utils.metric_writers import MemoryWriter
 from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 
-from src.earl.agents.random_agent.random_agent import RandomAgent
-from src.earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnax
-from src.earl.environment_loop import CycleResult
-from src.earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey, State
-from src.earl.utils.prng import keygen
+from earl.agents.random_agent.random_agent import RandomAgent
+from earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnax
+from earl.environment_loop import CycleResult
+from earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey, State
+from earl.utils.prng import keygen
 
 
 @pytest.mark.parametrize(("inference", "num_off_policy_updates"), [(True, 0), (False, 0), (False, 2)])

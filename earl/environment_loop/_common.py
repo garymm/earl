@@ -11,7 +11,7 @@ from gymnax import EnvState
 from jax_loop_utils.metric_writers.interface import Scalar as ScalarMetric
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from src.earl.core import (
+from earl.core import (
     AgentState,
     ConflictingMetricError,
     EnvStep,
@@ -23,7 +23,7 @@ from src.earl.core import (
     _OptState,
     _StepState,
 )
-from src.earl.metric_key import MetricKey
+from earl.metric_key import MetricKey
 
 ArrayMetrics = dict[str, jax.Array]
 

@@ -14,8 +14,8 @@ from jax_loop_utils.metric_writers.interface import MetricWriter
 from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 from jaxtyping import PyTree
 
-from src.earl.core import Agent
-from src.earl.environment_loop import ObserveCycle, no_op_observe_cycle
+from earl.core import Agent
+from earl.environment_loop import ObserveCycle, no_op_observe_cycle
 
 # enable draccus to parse jax arrays from strings
 draccus_decode.register(jax.Array, jax.numpy.asarray)  # pyright: ignore[reportFunctionMemberAccess]
