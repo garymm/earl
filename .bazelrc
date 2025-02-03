@@ -1,1 +1,2 @@
+# https://bazel.build/reference/command-line-reference
 test --test_output=errors
