@@ -17,17 +17,17 @@ from gymnax.environments.environment import Environment as GymnaxEnv
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 from jaxtyping import PyTree
 
-from src.earl.agents.random_agent.random_agent import RandomAgent
-from src.earl.core import Agent, Image, Metrics, env_info_from_gymnasium
-from src.earl.environment_loop.gymnasium_loop import GymnasiumLoop
-from src.earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, MetricWriters
-from src.earl.experiments.run_experiment import (
+from earl.agents.random_agent.random_agent import RandomAgent
+from earl.core import Agent, Image, Metrics, env_info_from_gymnasium
+from earl.environment_loop.gymnasium_loop import GymnasiumLoop
+from earl.experiments.config import CheckpointConfig, CheckpointRestoreMode, ExperimentConfig, MetricWriters
+from earl.experiments.run_experiment import (
     _config_to_dict,
     _new_checkpoint_manager,
     _restore_checkpoint,
     run_experiment,
 )
-from src.earl.metric_key import MetricKey
+from earl.metric_key import MetricKey
 
 
 class MockGymnasiumLoop(GymnasiumLoop):

@@ -4,9 +4,9 @@ import optax
 from gymnax.environments import CartPole
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
-from src.earl.agents import simple_policy_gradient
-from src.earl.core import env_info_from_gymnax
-from src.earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
+from earl.agents import simple_policy_gradient
+from earl.core import env_info_from_gymnax
+from earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
 
 
 def test_learns_cart_pole():

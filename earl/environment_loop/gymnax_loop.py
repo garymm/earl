@@ -14,7 +14,7 @@ from jax_loop_utils.metric_writers.interface import MetricWriter
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
-from src.earl.core import (
+from earl.core import (
     Agent,
     AgentState,
     EnvStep,
@@ -23,7 +23,7 @@ from src.earl.core import (
     _OptState,
     _StepState,
 )
-from src.earl.environment_loop import (
+from earl.environment_loop import (
     ArrayMetrics,
     CycleResult,
     ObserveCycle,
@@ -32,14 +32,14 @@ from src.earl.environment_loop import (
     StepCarry,
     no_op_observe_cycle,
 )
-from src.earl.environment_loop._common import (
+from earl.environment_loop._common import (
     extract_metrics,
     pytree_leaf_means,
     raise_if_metric_conflicts,
     to_num_envs_first,
 )
-from src.earl.metric_key import MetricKey
-from src.earl.utils.eqx_filter import filter_scan  # TODO: remove deps on research
+from earl.metric_key import MetricKey
+from earl.utils.eqx_filter import filter_scan  # TODO: remove deps on research
 
 
 @eqx.filter_grad(has_aux=True)

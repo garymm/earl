@@ -14,12 +14,12 @@ from gymnasium.envs.classic_control.pendulum import PendulumEnv
 from gymnax.environments.spaces import Discrete
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
-from src.earl.agents.random_agent.random_agent import RandomAgent
-from src.earl.core import ConflictingMetricError, Metrics, env_info_from_gymnasium
-from src.earl.environment_loop import CycleResult
-from src.earl.environment_loop.gymnasium_loop import GymnasiumLoop
-from src.earl.metric_key import MetricKey
-from src.earl.utils.prng import keygen
+from earl.agents.random_agent.random_agent import RandomAgent
+from earl.core import ConflictingMetricError, Metrics, env_info_from_gymnasium
+from earl.environment_loop import CycleResult
+from earl.environment_loop.gymnasium_loop import GymnasiumLoop
+from earl.metric_key import MetricKey
+from earl.utils.prng import keygen
 
 
 @pytest.mark.parametrize(("inference", "num_off_policy_updates"), [(True, 0), (False, 0), (False, 2)])

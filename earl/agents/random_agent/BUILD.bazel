@@ -5,7 +5,7 @@ py_library(
     srcs = ["random_agent.py"],
     visibility = ["//visibility:public"],
     deps = [
-        "//src/earl:core",
+        "//earl:core",
         "@pypi//jax",
         "@pypi//jaxtyping",
     ],

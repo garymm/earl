@@ -1,8 +1,8 @@
 import jax.numpy as jnp
 import pytest
 
-from src.earl.core import EnvStep, Image, Video
-from src.earl.environment_loop._common import (
+from earl.core import EnvStep, Image, Video
+from earl.environment_loop._common import (
     CycleResult,
     multi_observe_cycle,
     pixel_obs_to_video_observe_cycle,
