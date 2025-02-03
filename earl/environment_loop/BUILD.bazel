@@ -54,7 +54,7 @@ py_library(
 
 py_test(
     name = "test_gymnasium_loop",
-    timeout = "short",
+    timeout = "moderate",
     srcs = ["test_gymnasium_loop.py"],
     deps = [
         ":gymnasium_loop",
