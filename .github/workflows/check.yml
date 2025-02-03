@@ -58,7 +58,7 @@ jobs:
       #     files: ./bazel-out/_coverage/_coverage_report.dat
       #     fail_ci_if_error: true
 
-  buildifier:
+  format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,4 +86,4 @@ jobs:
           bazel \
             --bazelrc=.github/workflows/ci.bazelrc \
             run \
-            //:buildifier.check
+            //:format.check
