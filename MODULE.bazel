@@ -39,3 +39,5 @@ bazel_dep(
     dev_dependency = True,
 )
 bazel_dep(name = "aspect_rules_lint", version = "1.0.9", dev_dependency = True)
+
+bazel_dep(name = "aspect_bazel_lib", version = "2.13.0")
