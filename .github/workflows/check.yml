@@ -82,10 +82,13 @@ jobs:
             "~/.cache/bazelisk"
           key: bazel-other
 
+      # remote_download_outputs=all maybe avoids
+      # a bug in bazel
       - run: |
           bazel \
             --bazelrc=.github/workflows/ci.bazelrc \
             run \
+            --remote_download_outputs=all \
             //:format.check
 
   lint:
