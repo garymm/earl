@@ -8,7 +8,7 @@ build --bes_results_url=https://app.buildbuddy.io/invocation/
 build --bes_backend=grpcs://remote.buildbuddy.io
 build --remote_cache=grpcs://remote.buildbuddy.io
 build --remote_timeout=3600
-build --experimental_remote_cache_compression
+build --remote_cache_compression
 build --nolegacy_important_outputs
 
 common --repository_cache=/home/runner/.cache/bazel_repository_cache
