@@ -1,3 +1,4 @@
+# https://bazel.build/reference/command-line-reference
 build --announce_rc
 build --color=yes
 build --show_timestamps
