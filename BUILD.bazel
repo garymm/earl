@@ -1,3 +1,4 @@
+load("@buildifier_prebuilt//:rules.bzl", "buildifier")
 load("@rules_uv//uv:pip.bzl", "pip_compile")
 load("@rules_uv//uv:venv.bzl", "create_venv")
 
@@ -18,4 +19,10 @@ create_venv(
     name = "dot_venv_linux_x86_64",
     destination_folder = ".venv",
     requirements_txt = ":requirements_linux_x86_64.txt",
+)
+
+buildifier(
+    name = "buildifier.check",
+    lint_mode = "warn",
+    mode = "diff",
 )

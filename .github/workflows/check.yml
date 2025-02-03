@@ -1,0 +1,89 @@
+name: check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set buildbuddy-api-key
+        run: |
+          echo 'build --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_API_KEY }}' >> .bazelrc
+
+      - name: set bazel upload flags
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo 'build --noremote_upload_local_results' >> .bazelrc
+
+      - name: mount bazel other caches
+        uses: actions/cache@v4
+        if: github.ref == 'refs/heads/master'
+        with:
+          path: |
+            "~/.cache/bazel_install_base"
+            "~/.cache/bazel_output_base/external"
+            "~/.cache/bazel_repository_cache"
+            "~/.cache/bazelisk"
+          key: bazel-other
+
+      - name: mount bazel other caches
+        uses: actions/cache/restore@v4
+        if: github.ref != 'refs/heads/master'
+        with:
+          path: |
+            "~/.cache/bazel_install_base"
+            "~/.cache/bazel_output_base/external"
+            "~/.cache/bazel_repository_cache"
+            "~/.cache/bazelisk"
+          key: bazel-other
+
+      - run: |
+          bazel \
+            --bazelrc=.github/workflows/ci.bazelrc \
+            test \
+            --collect_code_coverage \
+            --combined_report=lcov \
+            //...
+
+      # TODO: enable codecov
+      # - uses: codecov/codecov-action@v5
+      #   with:
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+      #     files: ./bazel-out/_coverage/_coverage_report.dat
+      #     fail_ci_if_error: true
+
+  buildifier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set buildbuddy-api-key
+        run: |
+          echo 'build --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_API_KEY }}' >> .bazelrc
+
+      - name: set bazel upload flags
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo 'build --noremote_upload_local_results' >> .bazelrc
+
+      - name: mount bazel other caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            "~/.cache/bazel_install_base"
+            "~/.cache/bazel_output_base"
+            "~/.cache/bazel_repository_cache"
+            "~/.cache/bazelisk"
+          key: bazel-other
+
+      - run: |
+          bazel \
+            --bazelrc=.github/workflows/ci.bazelrc \
+            run \
+            //:buildifier.check

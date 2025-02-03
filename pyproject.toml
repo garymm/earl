@@ -33,7 +33,7 @@ test = ["absl-py>=2.1.0"]
 Homepage = "http://github.com/garymm/earl"
 
 [dependency-groups]
-dev = ["pyright==1.1.391", "ruff>=0.9.1"]
+dev = ["basedpyright==1.26.0", "ruff>=0.9.1"]
 
 [build-system]
 requires = ["hatchling"]
