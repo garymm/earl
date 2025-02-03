@@ -88,6 +88,7 @@ def raise_if_metric_conflicts(metrics: Mapping):
     conflicting_keys = [k for k in metrics if k in _ALL_METRIC_KEYS]
     if not conflicting_keys:
         return
+    print = True
     raise ConflictingMetricError(
         "The following metrics conflict with Earl's default MetricKey: " + ", ".join(conflicting_keys)
     )
