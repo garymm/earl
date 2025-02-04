@@ -1,2 +1,7 @@
 # https://bazel.build/reference/command-line-reference
 test --test_output=errors
+
+# Do not load LD_LIBRARY_PATH from the environment. This leads to more cache hits
+# when triggering builds using different shells on the same machine.
+# https://stackoverflow.com/questions/74881594/bazel-builds-from-scratch-ignoring-cache
+build --incompatible_strict_action_env

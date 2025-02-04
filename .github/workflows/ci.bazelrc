@@ -3,7 +3,10 @@ build --announce_rc
 build --color=yes
 build --show_timestamps
 build --terminal_columns=120
-
+# Do not load LD_LIBRARY_PATH from the environment. This leads to more cache hits
+# when triggering builds using different shells on the same machine.
+# https://stackoverflow.com/questions/74881594/bazel-builds-from-scratch-ignoring-cache
+build --incompatible_strict_action_env
 # remote cache through buildbuddy
 build --bes_results_url=https://app.buildbuddy.io/invocation/
 build --bes_backend=grpcs://remote.buildbuddy.io
