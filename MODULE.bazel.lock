@@ -727,9 +727,10 @@
     "@@rules_python+//python/extensions:pip.bzl%pip": {
       "general": {
         "bzlTransitiveDigest": "h3l5yNW8eXVHIXFfZ1vECDJPLlSAOWTlWDCGnLT9mRw=",
-        "usagesDigest": "oDt+U4CS10G8wWMfNfgdn2rlOPzTBsw0pcy4u/moVX4=",
+        "usagesDigest": "T0fL24tE1b+5kwPNF/9I8bAf12j/qnhoQArq5gR2sIA=",
         "recordedFileInputs": {
           "@@//requirements_linux_x86_64.txt": "23f9bb7c0ca9c2ccf22a05917dfdfacbeba5f3b010a6f3762e1c77174df1237e",
+          "@@//tools/requirements_basedpyright.txt": "c4bc0a17780fc1e7a7b3ffa4549677e37af6334f890a97eb7931249cf438a286",
           "@@protobuf+//python/requirements.txt": "983be60d3cec4b319dcab6d48aeb3f5b2f7c3350f26b3a9e97486c37967c73c5",
           "@@rules_fuzzing+//fuzzing/requirements.txt": "ab04664be026b632a0d2a2446c4f65982b7654f5b6851d2f9d399a19b7242a5b",
           "@@rules_python+//tools/publish/requirements_darwin.txt": "095d4a4f3d639dce831cd493367631cd51b53665292ab20194bac2c0c6458fa8",
@@ -742,6 +743,32 @@
           "RULES_PYTHON_REPO_DEBUG_VERBOSITY": null
         },
         "generatedRepoSpecs": {
+          "basedpyright_312_basedpyright": {
+            "repoRuleId": "@@rules_python+//python/private/pypi:whl_library.bzl%whl_library",
+            "attributes": {
+              "dep_template": "@basedpyright//{name}:{target}",
+              "extra_pip_args": [
+                "--index-url",
+                "https://pypi.org/simple"
+              ],
+              "python_interpreter_target": "@@rules_python++python+python_3_12_host//:python",
+              "repo": "basedpyright_312",
+              "requirement": "basedpyright==1.26.0 --hash=sha256:5a6a17f2c389ec313dd2c3644f40e8221bc90252164802e626055341c0a37381 --hash=sha256:5e01f6eb9290a09ef39672106cf1a02924fdc8970e521838bc502ccf0676f32f"
+            }
+          },
+          "basedpyright_312_nodejs_wheel_binaries": {
+            "repoRuleId": "@@rules_python+//python/private/pypi:whl_library.bzl%whl_library",
+            "attributes": {
+              "dep_template": "@basedpyright//{name}:{target}",
+              "extra_pip_args": [
+                "--index-url",
+                "https://pypi.org/simple"
+              ],
+              "python_interpreter_target": "@@rules_python++python+python_3_12_host//:python",
+              "repo": "basedpyright_312",
+              "requirement": "nodejs-wheel-binaries==22.13.1 --hash=sha256:4fc88c98eebabfc36b5270a4ab974a2682746931567ca76a5ca49c54482bbb51 --hash=sha256:53a40d0269689aa2eaf2e261cbe5ec256644bc56aae0201ef344b7d8f40ccc79 --hash=sha256:549371a929a29fbce8d0ab8f1b5410549946d4f1b0376a5ce635b45f6d05298f --hash=sha256:8b9f75ea8f5e3e5416256fcb00a98cbe14c8d3b6dcaf17da29c4ade5723026d8 --hash=sha256:94608702ef6c389d32e89ff3b7a925cb5dedaf55b5d98bd0c4fb3450a8b6d1c1 --hash=sha256:a0c15213c9c3383541be4400a30959883868ce5da9cebb3d63ddc7fe61459308 --hash=sha256:afcb40484bb02f23137f838014724604ae183fd767b30da95b0be1510a40c06d --hash=sha256:cf72d50d755f4e5c0709b0449de01768d96b3b1ec7aa531561415b88f179ad8b --hash=sha256:e4f64d0e26600d51cbdd98a6718a19c2d1b8c7538e9e353e95a634a06a8e1a58"
+            }
+          },
           "pip_deps_310_numpy": {
             "repoRuleId": "@@rules_python+//python/private/pypi:whl_library.bzl%whl_library",
             "attributes": {
@@ -4076,6 +4103,22 @@
               "urls": [
                 "https://files.pythonhosted.org/packages/54/bf/5c0000c44ebc80123ecbdddba1f5dcd94a5ada602a9c225d84b5aaa55e86/zipp-3.20.2.tar.gz"
               ]
+            }
+          },
+          "basedpyright": {
+            "repoRuleId": "@@rules_python+//python/private/pypi:hub_repository.bzl%hub_repository",
+            "attributes": {
+              "repo_name": "basedpyright",
+              "extra_hub_aliases": {},
+              "whl_map": {
+                "basedpyright": "{\"basedpyright_312_basedpyright\":[{\"version\":\"3.12\"}]}",
+                "nodejs_wheel_binaries": "{\"basedpyright_312_nodejs_wheel_binaries\":[{\"version\":\"3.12\"}]}"
+              },
+              "packages": [
+                "basedpyright",
+                "nodejs_wheel_binaries"
+              ],
+              "groups": {}
             }
           },
           "pip_deps": {

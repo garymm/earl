@@ -5,6 +5,7 @@ on:
     branches: [master]
   pull_request:
     branches: ["*"]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -43,7 +44,8 @@ jobs:
             "~/.cache/bazelisk"
           key: bazel-other
 
-      - run: |
+      - name: bazel test
+        run: |
           bazel \
             --bazelrc=.github/workflows/ci.bazelrc \
             test \
@@ -81,14 +83,14 @@ jobs:
             "~/.cache/bazelisk"
           key: bazel-other
 
-      # remote_download_outputs=all maybe avoids
-      # a bug in bazel
-      - run: |
+      # remote_download_outputs=all maybe avoids a bug in bazel
+      - name: check formatting
+        run: |
           bazel \
             --bazelrc=.github/workflows/ci.bazelrc \
             run \
             --remote_download_outputs=all \
-            //:format.check
+            //tools:format.check
 
   lint:
     runs-on: ubuntu-latest
@@ -114,9 +116,54 @@ jobs:
             "~/.cache/bazelisk"
           key: bazel-other
 
-      - run: |
+      - name: tools/lint.sh
+        run: |
           set -o xtrace
           tools/lint.sh \
             --bazelrc .github/workflows/ci.bazelrc \
             --fail_on_violation \
             //...
+
+  basedpyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set buildbuddy-api-key
+        run: |
+          echo 'build --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_API_KEY }}' >> .bazelrc
+
+      - name: set bazel upload flags
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo 'build --noremote_upload_local_results' >> .bazelrc
+
+      - name: mount bazel other caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            "~/.cache/bazel_install_base"
+            "~/.cache/bazel_output_base"
+            "~/.cache/bazel_repository_cache"
+            "~/.cache/bazelisk"
+          key: bazel-other
+
+      - name: create virtualenv
+        # Ideally basedpyright woould run as an aspect, on each target
+        # but for now we run on the whole repo. Give it a .venv to have
+        # access to dependencies.
+        run: |
+          bazel \
+            --bazelrc=.github/workflows/ci.bazelrc \
+            run \
+            //:dot_venv_linux_x86_64
+
+      - name: basedpyright
+        run: |
+          bazel \
+            --bazelrc=.github/workflows/ci.bazelrc \
+            run \
+            //tools:basedpyright \
+            -- \
+            --pythonpath $(pwd)/.venv/bin/python \
+            $(pwd)/earl
