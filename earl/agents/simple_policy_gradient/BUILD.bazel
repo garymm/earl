@@ -21,12 +21,12 @@ py_test(
         ":simple_policy_gradient",
         "//earl:core",
         "//earl/environment_loop:gymnax_loop",
-        "@pypi//absl_py",
         "@pypi//equinox",
         "@pypi//gymnax",
         "@pypi//jax",
         "@pypi//jax_loop_utils",
         "@pypi//numpy",
         "@pypi//optax",
+        "@pypi//pytest",
     ],
 )
