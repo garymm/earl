@@ -33,6 +33,14 @@ pip.override(
     patches = ["//tools/patches:orbax-remove-BUILD.patch"],
 )
 use_repo(pip, "pypi")
+
+pip.parse(
+    hub_name = "basedpyright",
+    python_version = _PYTHON_VERSION,
+    requirements_lock = "//tools:requirements_basedpyright.txt",
+)
+
+use_repo(pip, "basedpyright")
 # END python dependencies
 
 bazel_dep(name = "aspect_rules_py", version = "1.3.1")

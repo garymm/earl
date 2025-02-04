@@ -81,14 +81,13 @@ jobs:
             "~/.cache/bazelisk"
           key: bazel-other
 
-      # remote_download_outputs=all maybe avoids
-      # a bug in bazel
+      # remote_download_outputs=all maybe avoids a bug in bazel
       - run: |
           bazel \
             --bazelrc=.github/workflows/ci.bazelrc \
             run \
             --remote_download_outputs=all \
-            //:format.check
+            //tools:format.check
 
   lint:
     runs-on: ubuntu-latest
@@ -120,3 +119,9 @@ jobs:
             --bazelrc .github/workflows/ci.bazelrc \
             --fail_on_violation \
             //...
+
+      - run: |
+          bazel \
+            --bazelrc=.github/workflows/ci.bazelrc \
+            run \
+            //tools:basedpyright
