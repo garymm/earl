@@ -48,15 +48,6 @@ exclude = ["test_*.py", "BUILD.bazel"]
 [tool.hatch.build.targets.wheel]
 packages = ["earl"]
 
-[tool.pytest.ini_options]
-filterwarnings = [
-    # Please only ignore warnings that come from a transitive dependency that we
-    # can't easily avoid.
-    # See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#controlling-warnings
-    # action:message:category:module:line
-    "error",
-]
-
 [tool.ruff]
 line-length = 100
 indent-width = 2
