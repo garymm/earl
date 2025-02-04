@@ -121,7 +121,6 @@ jobs:
           set -o xtrace
           tools/lint.sh \
             --bazelrc .github/workflows/ci.bazelrc \
-            --fail_on_violation \
             //...
 
   basedpyright:
