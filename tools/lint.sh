@@ -20,14 +20,12 @@ args+=(
 	"--norun_validations"
 	"--output_groups=rules_lint_human"
 	"--remote_download_regex='.*AspectRulesLint.*'"
+	"--@aspect_rules_lint//lint:fail_on_violation"
+	"--keep_going"
 )
 
 while [[ "$#" -gt 0 ]]; do
 	case "$1" in
-		--fail_on_violation)
-			args+=( "--@aspect_rules_lint//lint:fail_on_violation" "--keep_going" )
-			shift
-			;;
 		--bazelrc)
 			if [[ "$#" -lt 2 ]]; then
 				echo "Error: --bazelrc requires a path argument"
