@@ -1,6 +1,7 @@
 # https://python-poetry.org/docs/pyproject/
 [project]
 dependencies = [
+    "draccus",
     "equinox>=0.11.11",
     "gymnax",
     "gymnasium>=1.0.0",
@@ -42,6 +43,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 exclude = ["test_*.py"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["earl"]
+
 [tool.pytest.ini_options]
 filterwarnings = [
     # Please only ignore warnings that come from a transitive dependency that we
@@ -65,9 +69,11 @@ select = [
     "UP",  # pyupgrade
 ]
 
-[tool.pyright]
-typeCheckingMode = "standard"
-
 [tool.uv.sources]
+draccus = { git = "https://github.com/dlwh/draccus", rev = "9b690730ca108930519f48cc5dead72a72fd27cb" }
 gymnax = { git = "https://github.com/Astera-org/gymnax", rev = "c52a7dac7b41514297d2e98b1b288d56715a5165" }
 jax_loop_utils = { git = "https://github.com/Astera-org/jax_loop_utils", rev = "5cd50bfa0a6e42ccc7438fb556d80e1ec3074932" }
+
+[tool.basedpyright]
+include = ["earl"]
+typeCheckingMode = "standard"

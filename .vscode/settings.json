@@ -1,6 +1,5 @@
 {
-    "python.analysis.typeCheckingMode": "standard",
-    "python.analysis.ignore": [
+    "basedpyright.analysis.ignore": [
         "${workspaceFolder}/.venv"
     ],
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
