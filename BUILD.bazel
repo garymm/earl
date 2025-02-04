@@ -20,17 +20,4 @@ create_venv(
     requirements_txt = ":requirements_linux_x86_64.txt",
 )
 
-# NB: this alias does NOT cause Bazel's Loading phase to load the tools/BUILD file.
-# That's important as we don't want users to wait for "Eager fetching" for ~EVERY language which
-# that build file loads from.
-alias(
-    name = "format",
-    actual = "//tools:format",
-)
-
-alias(
-    name = "format.check",
-    actual = "//tools:format.check",
-)
-
 exports_files(["pyproject.toml"])
