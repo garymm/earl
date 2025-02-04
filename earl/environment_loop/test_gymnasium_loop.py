@@ -29,7 +29,7 @@ from earl.utils.prng import keygen
     (False, 2),
   ],
 )
-# setting default device speeds things up a little, but running without cuda enabled jaxlib is even faster
+# setting default device speeds up a little, but running without cuda enabled jaxlib is faster
 @jax.default_device(jax.devices("cpu")[0])
 def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
   num_envs = 2
