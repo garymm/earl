@@ -27,7 +27,7 @@ classifiers = [
 keywords = ["Equinox", "JAX", "Reinforcement Learning"]
 
 [project.optional-dependencies]
-test = ["absl-py>=2.1.0", "coverage>=7.0.0", "pytest>=8.0.0"]
+test = ["coverage>=7.0.0", "pytest>=8.0.0"]
 
 [project.urls]
 Homepage = "http://github.com/garymm/earl"

@@ -23,7 +23,6 @@ py_test(
     deps = [
         ":common",
         "//earl:core",
-        "@pypi//absl_py",
         "@pypi//jax",
     ],
 )
@@ -64,11 +63,11 @@ py_test(
         "//earl:metric_key",
         "//earl/agents/random_agent",
         "//earl/utils:prng",
-        "@pypi//absl_py",
         "@pypi//gymnasium",
         "@pypi//gymnax",
         "@pypi//jax",
         "@pypi//numpy",
+        "@pypi//pytest",
     ],
 )
 
@@ -100,8 +99,8 @@ py_test(
         "//earl:metric_key",
         "//earl/agents/random_agent",
         "//earl/utils:prng",
-        "@pypi//absl_py",
         "@pypi//gymnax",
         "@pypi//jax",
+        "@pypi//pytest",
     ],
 )
