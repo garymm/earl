@@ -91,11 +91,11 @@ class GymnaxLoop:
         env_params: The environment's parameters.
         agent: The agent.
         num_envs: The number of environments to run in parallel.
-        key: The PRNG key. Must not be shared with the agent state, as this will cause jax buffer donation
-            errors.
+        key: The PRNG key. Must not be shared with the agent state, as this will cause jax buffer
+            donation errors.
         metric_writer: The metric writer to write metrics to.
-        observe_cycle: A function that takes a CycleResult representing a final environment state and a trajectory
-            of length steps_per_cycle and runs any custom logic on it.
+        observe_cycle: A function that takes a CycleResult representing a final environment state
+            and a trajectory of length steps_per_cycle and runs any custom logic on it.
         inference: If False, agent.update_for_cycle() will not be called.
         assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
 
@@ -151,9 +151,9 @@ class GymnaxLoop:
             after calling this function. They can instead use the returned state.
             Callers can pass in an AgentState, which is equivalent to passing in a LoopState
             with the same agent_state and all other fields set to their default values.
-            state.agent_state will be replaced with `equinox.nn.inference_mode(agent_state, value=inference)`
-            before running, where `inference` is the value that was passed into
-            GymnaxLoop.__init__().
+            state.agent_state will be replaced with
+            `equinox.nn.inference_mode(agent_state, value=inference)` before running, where
+            `inference` is the value that was passed into GymnaxLoop.__init__().
         num_cycles: The number of cycles to run.
         steps_per_cycle: The number of steps to run in each cycle.
         print_progress: Whether to print progress to std out.

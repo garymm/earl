@@ -1,5 +1,5 @@
-# Only things that are meant to be used outside of the environment_loop module should be exposed here
-# Other things can be shared via _common directly.
+# Only things that are meant to be used outside of the environment_loop module should be exposed
+# here. Other things can be shared via _common directly.
 from ._common import (
   ArrayMetrics,
   CycleResult,

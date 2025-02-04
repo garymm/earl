@@ -393,8 +393,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
     Args:
         state: The current agent state. Donated, so callers should not access it after calling.
-        env_step: The current environment step. All fields are batched, so any vmap() should be done inside
-            this method.
+        env_step: The current environment step. All fields are batched, so any vmap() should be done
+          inside this method.
 
     Returns:
         AgentStep which contains the batch of actions and the updated hidden state.
@@ -420,7 +420,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
     Sub-classes should override _observe_cycle. This method is a wrapper that adds jit-compilation.
 
     Args:
-        state: The current agent state. State.experience is donated, so callers should not access it after calling.
+        state: The current agent state. State.experience is donated, so callers should not access it
+          after calling.
         trajectory: A trajectory of env steps where the shape of each field is
         (num_envs, num_steps, *).
 
@@ -446,7 +447,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
     Nets arg is donated, meaning callers should not access it after calling.
 
-    Sub-classes should override _partition_for_grad. This method is a wrapper that adds jit-compilation.
+    Sub-classes should override _partition_for_grad. This method is a wrapper that adds
+    jit-compilation.
 
     Returns: A tuple of Networks, the first of which contains all the fields for which the gradients
         should be calculated, and the second contains the rest. They will be combined by with
@@ -491,7 +493,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
   ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
     """Optimizes agent state based on gradients of the losses returned by self.loss().
 
-    Sub-classes should override _optimize_from_grads. This method is a wrapper that adds jit-compilation.
+    Sub-classes should override _optimize_from_grads. This method is a wrapper that adds
+    jit-compilation.
 
     Args:
         state: The current agent state. Donated, so callers should not access it after calling.

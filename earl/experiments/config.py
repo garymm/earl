@@ -171,8 +171,8 @@ class ExperimentConfig(abc.ABC):
 ExperimentConfig.__init__.__doc__ = """
 Args:
     env: Environment parameters.
-    num_eval_cycles: Number of cycles to evaluate the agent for. AgentState.inference will be set to True,
-      and no optimization will be performed. Must divide num_train_cycles.
+    num_eval_cycles: Number of cycles to evaluate the agent for. AgentState.inference will be set to
+      True, and no optimization will be performed. Must divide num_train_cycles.
     num_train_cycles: Number of cycles to train the agent for. Must be divisible by num_eval_cycles.
     num_envs: Number of environments to run in parallel.
     random_seed: Random seed to use for the experiment.
@@ -182,6 +182,8 @@ Args:
       will override the configuration in this ExperimentConfig.
       The step number passed to CheckpointManager.save() is a number of environment steps
       during training cycles. It is only called after an eval cycle.
-      Example: if steps_per_cycle=3, num_train_cycles=10 and num_eval_cycles=2, save(5*3) and save(10*3) will be called.
-      If num_eval_cycles is 0, CheckpointManager.save(num_train_cycles*steps_per_cycle) will be called after training.
+      Example: if steps_per_cycle=3, num_train_cycles=10 and num_eval_cycles=2, save(5*3) and
+      save(10*3) will be called.
+      If num_eval_cycles is 0, CheckpointManager.save(num_train_cycles*steps_per_cycle) will be
+      called after training.
 """
