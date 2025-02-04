@@ -51,12 +51,11 @@ jobs:
             --combined_report=lcov \
             //...
 
-      # TODO: enable codecov
-      # - uses: codecov/codecov-action@v5
-      #   with:
-      #     token: ${{ secrets.CODECOV_TOKEN }}
-      #     files: ./bazel-out/_coverage/_coverage_report.dat
-      #     fail_ci_if_error: true
+      - uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./bazel-out/_coverage/_coverage_report.dat
+          fail_ci_if_error: true
 
   format:
     runs-on: ubuntu-latest

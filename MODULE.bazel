@@ -11,10 +11,7 @@ _PYTHON_VERSION = "3.12"
 bazel_dep(name = "rules_python", version = "1.1.0", dev_dependency = True)
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(
-    configure_coverage_tool = True,
-    python_version = _PYTHON_VERSION,
-)
+python.toolchain(python_version = _PYTHON_VERSION)
 # END python toolchain
 
 # BEGIN python dependencies
