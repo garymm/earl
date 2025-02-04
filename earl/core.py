@@ -17,19 +17,19 @@ from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
 
 class ConflictingMetricError(Exception):
-    pass
+  pass
 
 
 class Image(eqx.Module):
-    """When returning an image from observe_cycle(), wrap it in this class."""
+  """When returning an image from observe_cycle(), wrap it in this class."""
 
-    data: jax.Array
+  data: jax.Array
 
 
 class Video(eqx.Module):
-    """When returning a video from observe_cycle(), wrap it in this class."""
+  """When returning a video from observe_cycle(), wrap it in this class."""
 
-    data: jax.Array
+  data: jax.Array
 
 
 _Networks = TypeVar("_Networks", bound=PyTree)
@@ -41,7 +41,7 @@ Metrics = Mapping[str, Scalar | float | int | Image | Video]
 
 
 class SupportsStr(Protocol):
-    def __str__(self) -> str: ...
+  def __str__(self) -> str: ...
 
 
 # A collection of configuration values, keyed by name. AKA hyperparameters.
@@ -49,18 +49,18 @@ ConfigForLog = Mapping[str, SupportsStr]
 
 
 class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepState]):
-    """The state of an agent.
+  """The state of an agent.
 
-    All pytree leaves in the fields of any subclass must be one of the following types:
-    bool, int, float, jax.Array. This allows them to be saved and restored
-    by orbax.
-    """
+  All pytree leaves in the fields of any subclass must be one of the following types:
+  bool, int, float, jax.Array. This allows them to be saved and restored
+  by orbax.
+  """
 
-    step: _StepState
-    nets: _Networks
-    opt: _OptState
-    experience: _ExperienceState
-    inference: bool = False
+  step: _StepState
+  nets: _Networks
+  opt: _OptState
+  experience: _ExperienceState
+  inference: bool = False
 
 
 AgentState.__init__.__doc__ = """Args:
@@ -86,425 +86,442 @@ inference: True means inference mode, False means training.
 
 
 class AgentStep(NamedTuple, Generic[_StepState]):
-    """A batch of actions and updated hidden state."""
+  """A batch of actions and updated hidden state."""
 
-    action: jax.Array
-    state: _StepState
+  action: jax.Array
+  state: _StepState
 
 
 class EnvStep(eqx.Module):
-    """The result of taking an action in an environment.
+  """The result of taking an action in an environment.
 
-    Note that it may be a batch of timesteps, in which case
-    all of the members will have an additional leading batch dimension.
-    """
+  Note that it may be a batch of timesteps, in which case
+  all of the members will have an additional leading batch dimension.
+  """
 
-    """whether this is the first timestep in an episode.
+  """whether this is the first timestep in an episode.
 
     Because our environments automatically reset, this is true in 2 cases:
     1. The first timestep in an experiment (after an explicit env.reset()).
     2. The last timestep of an episode (since the the environment automatically
        resets and the observation is the first of the next episode).
     """
-    new_episode: jax.Array
-    obs: PyTree
-    prev_action: jax.Array  # the action taken in the previous timestep
-    reward: jax.Array
+  new_episode: jax.Array
+  obs: PyTree
+  prev_action: jax.Array  # the action taken in the previous timestep
+  reward: jax.Array
 
 
 @dataclass(frozen=True)
 class EnvInfo:
-    num_envs: int
-    observation_space: Space
-    action_space: Space
-    name: str
+  num_envs: int
+  observation_space: Space
+  action_space: Space
+  name: str
 
 
 def env_info_from_gymnax(env: GymnaxEnv, params: Any, num_envs: int) -> EnvInfo:
-    return EnvInfo(num_envs, env.observation_space(params), env.action_space(params), env.name)
+  return EnvInfo(num_envs, env.observation_space(params), env.action_space(params), env.name)
 
 
 def env_info_from_gymnasium(env: GymnasiumEnv, num_envs: int) -> EnvInfo:
-    observation_space = _convert_gymnasium_space_to_gymnax_space(env.observation_space)
-    action_space = _convert_gymnasium_space_to_gymnax_space(env.action_space)
-    return EnvInfo(num_envs, observation_space, action_space, str(env))
+  observation_space = _convert_gymnasium_space_to_gymnax_space(env.observation_space)
+  action_space = _convert_gymnasium_space_to_gymnax_space(env.action_space)
+  return EnvInfo(num_envs, observation_space, action_space, str(env))
 
 
 # Need to define these functions up here instead of nested so that the
 # functions are not reconstructed on each call.
 @eqx.filter_jit(donate="all-except-first")
 def _step_jit(
-    env_step: EnvStep,
-    state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
-    step: Callable[[AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep], AgentStep[_StepState]],
+  env_step: EnvStep,
+  state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+  step: Callable[
+    [AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep], AgentStep[_StepState]
+  ],
 ) -> AgentStep[_StepState]:
-    return step(state, env_step)
+  return step(state, env_step)
 
 
 @eqx.filter_jit(donate="all-except-first")
 def _update_experience_jit(
-    others: tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep],
-    experience: _ExperienceState,
-    update_experience: Callable[
-        [AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep], _ExperienceState
-    ],
+  others: tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep],
+  experience: _ExperienceState,
+  update_experience: Callable[
+    [AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep], _ExperienceState
+  ],
 ):
-    agent_state_no_exp, trajectory = others
-    agent_state = replace(agent_state_no_exp, experience=experience)
-    return update_experience(agent_state, trajectory)
+  agent_state_no_exp, trajectory = others
+  agent_state = replace(agent_state_no_exp, experience=experience)
+  return update_experience(agent_state, trajectory)
 
 
 @eqx.filter_jit(donate="all")
-def _partition_for_grad_jit(nets: _Networks, partition_for_grad: Callable[[_Networks], tuple[_Networks, _Networks]]):
-    return partition_for_grad(nets)
+def _partition_for_grad_jit(
+  nets: _Networks, partition_for_grad: Callable[[_Networks], tuple[_Networks, _Networks]]
+):
+  return partition_for_grad(nets)
 
 
 @eqx.filter_jit(donate="all")
 def _optimize_from_grads_jit(
-    state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
-    nets_grads: PyTree,
-    optimize_from_grads: Callable[
-        [AgentState[_Networks, _OptState, _ExperienceState, _StepState], PyTree],
-        AgentState[_Networks, _OptState, _ExperienceState, _StepState],
-    ],
+  state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+  nets_grads: PyTree,
+  optimize_from_grads: Callable[
+    [AgentState[_Networks, _OptState, _ExperienceState, _StepState], PyTree],
+    AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+  ],
 ):
-    return optimize_from_grads(state, nets_grads)
+  return optimize_from_grads(state, nets_grads)
 
 
 @eqx.filter_jit(donate="all")
 def _loss_jit(
-    state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
-    loss: Callable[[AgentState[_Networks, _OptState, _ExperienceState, _StepState]], tuple[Scalar, Metrics]],
+  state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+  loss: Callable[
+    [AgentState[_Networks, _OptState, _ExperienceState, _StepState]], tuple[Scalar, Metrics]
+  ],
 ):
-    return loss(state)
+  return loss(state)
 
 
 def _convert_gymnasium_space_to_gymnax_space(gym_space: gym_spaces.Space) -> gymnax_spaces.Space:
-    """Convert a Gymnasium space into a Gymnax space.
+  """Convert a Gymnasium space into a Gymnax space.
 
-    Args:
-        gym_space: The Gymnasium space to convert.
+  Args:
+      gym_space: The Gymnasium space to convert.
 
-    """
-    dtype = jnp.dtype(gym_space.dtype)
-    if isinstance(gym_space, gym_spaces.Box):
-        return gymnax_spaces.Box(
-            low=jnp.asarray(gym_space.low, dtype=dtype),
-            high=jnp.asarray(gym_space.high, dtype=dtype),
-            shape=gym_space.shape,
-            dtype=dtype,
-        )
-    elif isinstance(gym_space, gym_spaces.Discrete):
-        return gymnax_spaces.Discrete(num_categories=gym_space.n.item())
-    else:
-        raise ValueError(f"Unsupported Gymnasium space type: {type(gym_space)}")
+  """
+  dtype = jnp.dtype(gym_space.dtype)
+  if isinstance(gym_space, gym_spaces.Box):
+    return gymnax_spaces.Box(
+      low=jnp.asarray(gym_space.low, dtype=dtype),
+      high=jnp.asarray(gym_space.high, dtype=dtype),
+      shape=gym_space.shape,
+      dtype=dtype,
+    )
+  elif isinstance(gym_space, gym_spaces.Discrete):
+    return gymnax_spaces.Discrete(num_categories=gym_space.n.item())
+  else:
+    raise ValueError(f"Unsupported Gymnasium space type: {type(gym_space)}")
 
 
 class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepState]):
-    """Abstract class for a reinforcement learning agent.
+  """Abstract class for a reinforcement learning agent.
 
-    Sub-classes should:
-     * Create a sub-class of AgentState that fills in the type variables with concrete types.
-       See that type's docs for guideance.
-     * Implement the abstract methods.
+  Sub-classes should:
+   * Create a sub-class of AgentState that fills in the type variables with concrete types.
+     See that type's docs for guideance.
+   * Implement the abstract methods.
 
-    Agents are equinox.Modules, which means they are also pytrees and dataclasses.
-    Therefore you can use dataclass syntax when defining them, and __init__() will
-    automatically be defined for you.
+  Agents are equinox.Modules, which means they are also pytrees and dataclasses.
+  Therefore you can use dataclass syntax when defining them, and __init__() will
+  automatically be defined for you.
 
-    E.g.:
-    class MyAgent(Agent[Networks, CycleState, StepState]):
-        foo: int = eqx.field(static=True)
+  E.g.:
+  class MyAgent(Agent[Networks, CycleState, StepState]):
+      foo: int = eqx.field(static=True)
 
-    All pytree leaves in the fields of any subclass must be one of the following types:
-    int, float, jax.Array, or str. This allows them to be saved and restored
-    by orbax.
+  All pytree leaves in the fields of any subclass must be one of the following types:
+  int, float, jax.Array, or str. This allows them to be saved and restored
+  by orbax.
 
-    The framework will conceptually do one of the following to train an agent:
+  The framework will conceptually do one of the following to train an agent:
 
-    1. On-policy training (if num_off_policy_updates_per_cycle() == 0):
+  1. On-policy training (if num_off_policy_updates_per_cycle() == 0):
 
-    a = Agent()
-    env = vectorized_env(env_config)
-    state = a.new_training_state(...)
+  a = Agent()
+  env = vectorized_env(env_config)
+  state = a.new_training_state(...)
 
-    def run_cycle_and_loss(nets_to_grad, nets_no_grad, state, env_step):
-        state = replace(state, nets=eqx.combine(nets_to_grad, nets_no_grad))
-        trajectory = []
-        for step in range(steps_per_cycle):
-            action, state.hidden = a.select_action(state, env_step)
-            env_step = env.step(action)
-            trajectory.append(env_step)
-        state.experience = a.update_experience(state, trajectory)
-        return a.loss(state)
+  def run_cycle_and_loss(nets_to_grad, nets_no_grad, state, env_step):
+      state = replace(state, nets=eqx.combine(nets_to_grad, nets_no_grad))
+      trajectory = []
+      for step in range(steps_per_cycle):
+          action, state.hidden = a.select_action(state, env_step)
+          env_step = env.step(action)
+          trajectory.append(env_step)
+      state.experience = a.update_experience(state, trajectory)
+      return a.loss(state)
 
-    env_step = env.reset()
-    for cycle in range(num_cycles):
-        nets_yes_grad, nets_no_grad = a.partition_for_grad(state.nets)
-        grad = jax.grad(run_cycle_and_loss)(nets_yes_grad, nets_no_grad, state, env_step)
-        if training:
-            state = a.optimize_from_grads(state, grad)
+  env_step = env.reset()
+  for cycle in range(num_cycles):
+      nets_yes_grad, nets_no_grad = a.partition_for_grad(state.nets)
+      grad = jax.grad(run_cycle_and_loss)(nets_yes_grad, nets_no_grad, state, env_step)
+      if training:
+          state = a.optimize_from_grads(state, grad)
 
-    2. Off-policy training (if num_off_policy_updates_per_cycle() > 0):
+  2. Off-policy training (if num_off_policy_updates_per_cycle() > 0):
 
-    a = Agent()
-    env = vectorized_env(env_config)
-    state = a.new_training_state(...)
-    def run_cycle(state, env_step):
-        trajectory = []
-        for step in range(steps_per_cycle):
-            action, state.hidden = a.select_action(state, env_step)
-            env_step = env.step(action)
-            trajectory.append(env_step)
-        return state, trajectory
+  a = Agent()
+  env = vectorized_env(env_config)
+  state = a.new_training_state(...)
+  def run_cycle(state, env_step):
+      trajectory = []
+      for step in range(steps_per_cycle):
+          action, state.hidden = a.select_action(state, env_step)
+          env_step = env.step(action)
+          trajectory.append(env_step)
+      return state, trajectory
 
-    def compute_loss(nets_yes_grad, nets_no_grad, state):
-        state = replace(state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
-        return a.loss(state)
+  def compute_loss(nets_yes_grad, nets_no_grad, state):
+      state = replace(state, nets=eqx.combine(nets_yes_grad, nets_no_grad))
+      return a.loss(state)
 
-    env_step = env.reset()
-    for cycle in range(num_cycles):
-        state, trajectory = run_cycle(state, env_step)
-        state.experience = a.update_experience(state, trajectory)
-        for _ in range(a.num_off_policy_updates_per_cycle()):
-            nets_to_grad, nets_no_grad = a.partition_for_grad(state.nets)
-            grad = jax.grad(compute_loss)(nets_to_grad, nets_no_grad, state)
-            state = a.optimize_from_grads(state, grad)
+  env_step = env.reset()
+  for cycle in range(num_cycles):
+      state, trajectory = run_cycle(state, env_step)
+      state.experience = a.update_experience(state, trajectory)
+      for _ in range(a.num_off_policy_updates_per_cycle()):
+          nets_to_grad, nets_no_grad = a.partition_for_grad(state.nets)
+          grad = jax.grad(compute_loss)(nets_to_grad, nets_no_grad, state)
+          state = a.optimize_from_grads(state, grad)
+
+  """
+
+  def new_state(
+    self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray, inference: bool = False
+  ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
+    """Initializes agent state.
+
+    Args:
+        nets: the agent's neural networks. Donated, so callers should not access it after calling.
+        key: a PRNG key. Used to generate keys for hidden, opt, and experience.
+            Donated, so callers should not access it after calling.
+        inference: if True, initialize the state for inference (opt and experience are None).
 
     """
 
-    def new_state(
-        self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray, inference: bool = False
-    ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
-        """Initializes agent state.
+    # helper funcion to wrap with jit.
+    @eqx.filter_jit(donate="all")
+    def _helper(nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray):
+      hidden_key, opt_key, replay_key = jax.random.split(key, 3)
+      if inference:
+        return AgentState(
+          step=self.new_step_state(nets, env_info, key),
+          nets=nets,
+          opt=None,
+          experience=None,
+          inference=True,
+        )
+      else:
+        return AgentState(
+          step=self.new_step_state(nets, env_info, hidden_key),
+          nets=nets,
+          opt=self.new_opt_state(nets, env_info, opt_key),
+          experience=self.new_experience_state(nets, env_info, replay_key),
+        )
 
-        Args:
-            nets: the agent's neural networks. Donated, so callers should not access it after calling.
-            key: a PRNG key. Used to generate keys for hidden, opt, and experience.
-                Donated, so callers should not access it after calling.
-            inference: if True, initialize the state for inference (opt and experience are None).
+    # Not sure if the type ignore is the best thing.
+    # I want to avoid all implementors of _loss and _optimize_from_grads having to assert
+    # that opt and replay are not None, so I don't want to mark the fields optional.
+    # I tried adding making the fields optional and then adding another class, TrainingState,
+    # that is the same as AgentState but with the optional fields marked non-optional.
+    # However this would require implementors to deal with another type, so it's not clear
+    # it's a win.
+    return _helper(nets, env_info, key)  # type: ignore[return-value]
 
-        """
+  def new_step_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _StepState:
+    """Returns a new step state.
 
-        # helper funcion to wrap with jit.
-        @eqx.filter_jit(donate="all")
-        def _helper(nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray):
-            hidden_key, opt_key, replay_key = jax.random.split(key, 3)
-            if inference:
-                return AgentState(
-                    step=self.new_step_state(nets, env_info, key),
-                    nets=nets,
-                    opt=None,
-                    experience=None,
-                    inference=True,
-                )
-            else:
-                return AgentState(
-                    step=self.new_step_state(nets, env_info, hidden_key),
-                    nets=nets,
-                    opt=self.new_opt_state(nets, env_info, opt_key),
-                    experience=self.new_experience_state(nets, env_info, replay_key),
-                )
+    Args:
+        nets: the agent's neural networks.
+        env_info: info about the environment.
+        key: a PRNG key.
 
-        # Not sure if the type ignore is the best thing.
-        # I want to avoid all implementors of _loss and _optimize_from_grads having to assert
-        # that opt and replay are not None, so I don't want to mark the fields optional.
-        # I tried adding making the fields optional and then adding another class, TrainingState,
-        # that is the same as AgentState but with the optional fields marked non-optional.
-        # However this would require implementors to deal with another type, so it's not clear
-        # it's a win.
-        return _helper(nets, env_info, key)  # type: ignore[return-value]
+    """
+    return eqx.filter_jit(self._new_step_state)(nets, env_info, key)
 
-    def new_step_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _StepState:
-        """Returns a new step state.
+  @abc.abstractmethod
+  def _new_step_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _StepState:
+    """Returns a new step state.
 
-        Args:
-            nets: the agent's neural networks.
-            env_info: info about the environment.
-            key: a PRNG key.
+    Must be jit-compatible.
+    """
 
-        """
-        return eqx.filter_jit(self._new_step_state)(nets, env_info, key)
+  def new_experience_state(
+    self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray
+  ) -> _ExperienceState:
+    """Initializes experience state.
 
-    @abc.abstractmethod
-    def _new_step_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _StepState:
-        """Returns a new step state.
+    Args:
+        nets: the agent's neural networks.
+        env_info: info about the environment.
+        key: a PRNG key.
 
-        Must be jit-compatible.
-        """
+    """
+    return eqx.filter_jit(self._new_experience_state)(nets, env_info, key)
 
-    def new_experience_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _ExperienceState:
-        """Initializes experience state.
+  @abc.abstractmethod
+  def _new_experience_state(
+    self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray
+  ) -> _ExperienceState:
+    """Initializes replay state.
 
-        Args:
-            nets: the agent's neural networks.
-            env_info: info about the environment.
-            key: a PRNG key.
+    If an agent is on-policy (doesn't have any experience state), it can just return None.
 
-        """
-        return eqx.filter_jit(self._new_experience_state)(nets, env_info, key)
+    Must be jit-compatible.
+    """
 
-    @abc.abstractmethod
-    def _new_experience_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _ExperienceState:
-        """Initializes replay state.
+  def new_opt_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _OptState:
+    """Initializes optimizer state.
 
-        If an agent is on-policy (doesn't have any experience state), it can just return None.
+    Args:
+        nets: the agent's neural networks.
+        env_info: info about the environment.
+        key: a PRNG key.
 
-        Must be jit-compatible.
-        """
+    """
+    return eqx.filter_jit(self._new_opt_state)(nets, env_info, key)
 
-    def new_opt_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _OptState:
-        """Initializes optimizer state.
+  @abc.abstractmethod
+  def _new_opt_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _OptState:
+    """Initializes optimizer state.
 
-        Args:
-            nets: the agent's neural networks.
-            env_info: info about the environment.
-            key: a PRNG key.
+    Must be jit-compatible.
+    """
 
-        """
-        return eqx.filter_jit(self._new_opt_state)(nets, env_info, key)
+  def step(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], env_step: EnvStep
+  ) -> AgentStep[_StepState]:
+    """Selects a batch of actions and updates step state.
 
-    @abc.abstractmethod
-    def _new_opt_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _OptState:
-        """Initializes optimizer state.
+    Sub-classes should override _select_action. This method is a wrapper that adds jit-compilation.
 
-        Must be jit-compatible.
-        """
+    TODO: change interface to take in only _Networks and _StepState, which will let us avoid copying
+    those when doing inference on a different device.
 
-    def step(
-        self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], env_step: EnvStep
-    ) -> AgentStep[_StepState]:
-        """Selects a batch of actions and updates step state.
+    Args:
+        state: The current agent state. Donated, so callers should not access it after calling.
+        env_step: The current environment step. All fields are batched, so any vmap() should be done
+          inside this method.
 
-        Sub-classes should override _select_action. This method is a wrapper that adds jit-compilation.
+    Returns:
+        AgentStep which contains the batch of actions and the updated hidden state.
 
-        TODO: change interface to take in only _Networks and _StepState, which will let us avoid copying
-        those when doing inference on a different device.
+    """
+    # swap order of args so we can avoid donating env_step
+    return _step_jit(env_step, state, self._step)
 
-        Args:
-            state: The current agent state. Donated, so callers should not access it after calling.
-            env_step: The current environment step. All fields are batched, so any vmap() should be done inside
-                this method.
+  @abc.abstractmethod
+  def _step(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], env_step: EnvStep
+  ) -> AgentStep[_StepState]:
+    """Selects a batch of actions and updates hidden state.
 
-        Returns:
-            AgentStep which contains the batch of actions and the updated hidden state.
+    Must be jit-compatible.
+    """
 
-        """
-        # swap order of args so we can avoid donating env_step
-        return _step_jit(env_step, state, self._step)
+  def update_experience(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], trajectory: EnvStep
+  ) -> _ExperienceState:
+    """Observes a trajectory of environment timesteps and updates the experience state.
 
-    @abc.abstractmethod
-    def _step(
-        self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], env_step: EnvStep
-    ) -> AgentStep[_StepState]:
-        """Selects a batch of actions and updates hidden state.
+    Sub-classes should override _observe_cycle. This method is a wrapper that adds jit-compilation.
 
-        Must be jit-compatible.
-        """
+    Args:
+        state: The current agent state. State.experience is donated, so callers should not access it
+          after calling.
+        trajectory: A trajectory of env steps where the shape of each field is
+        (num_envs, num_steps, *).
 
-    def update_experience(
-        self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], trajectory: EnvStep
-    ) -> _ExperienceState:
-        """Observes a trajectory of environment timesteps and updates the experience state.
+    Returns:
+        The updated experience.
 
-        Sub-classes should override _observe_cycle. This method is a wrapper that adds jit-compilation.
+    """
+    exp = state.experience
+    agent_state_no_exp = replace(state, experience=None)
+    return _update_experience_jit((agent_state_no_exp, trajectory), exp, self._update_experience)
 
-        Args:
-            state: The current agent state. State.experience is donated, so callers should not access it after calling.
-            trajectory: A trajectory of env steps where the shape of each field is
-            (num_envs, num_steps, *).
+  @abc.abstractmethod
+  def _update_experience(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], trajectory: EnvStep
+  ) -> _ExperienceState:
+    """Observes a trajectory of environment timesteps and updates the experience state.
 
-        Returns:
-            The updated experience.
+    Must be jit-compatible.
+    """
 
-        """
-        exp = state.experience
-        agent_state_no_exp = replace(state, experience=None)
-        return _update_experience_jit((agent_state_no_exp, trajectory), exp, self._update_experience)
+  def partition_for_grad(self, nets: _Networks) -> tuple[_Networks, _Networks]:
+    """Partitions nets into trainable and non-trainable parts.
 
-    @abc.abstractmethod
-    def _update_experience(
-        self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], trajectory: EnvStep
-    ) -> _ExperienceState:
-        """Observes a trajectory of environment timesteps and updates the experience state.
+    Nets arg is donated, meaning callers should not access it after calling.
 
-        Must be jit-compatible.
-        """
+    Sub-classes should override _partition_for_grad. This method is a wrapper that adds
+    jit-compilation.
 
-    def partition_for_grad(self, nets: _Networks) -> tuple[_Networks, _Networks]:
-        """Partitions nets into trainable and non-trainable parts.
+    Returns: A tuple of Networks, the first of which contains all the fields for which the gradients
+        should be calculated, and the second contains the rest. They will be combined by with
+        equinox.combine().
+    """
+    return _partition_for_grad_jit(nets, self._partition_for_grad)
 
-        Nets arg is donated, meaning callers should not access it after calling.
+  def _partition_for_grad(self, nets: _Networks) -> tuple[_Networks, _Networks]:
+    """Partitions nets into trainable and non-trainable parts.
 
-        Sub-classes should override _partition_for_grad. This method is a wrapper that adds jit-compilation.
+    Must be jit-compatible.
 
-        Returns: A tuple of Networks, the first of which contains all the fields for which the gradients
-            should be calculated, and the second contains the rest. They will be combined by with
-            equinox.combine().
-        """
-        return _partition_for_grad_jit(nets, self._partition_for_grad)
+    Default implementation assumes nets is a PyTree and that all the
+    array leaves are trainable. If this is not the case, this method should be overridden.
+    """
+    return eqx.partition(nets, eqx.is_array)
 
-    def _partition_for_grad(self, nets: _Networks) -> tuple[_Networks, _Networks]:
-        """Partitions nets into trainable and non-trainable parts.
+  def loss(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]
+  ) -> tuple[Scalar, Metrics]:
+    """Returns loss and metrics. Called after some number of environment steps.
 
-        Must be jit-compatible.
+    State arg is donated, meaning callers should not access it after calling.
 
-        Default implementation assumes nets is a PyTree and that all the
-        array leaves are trainable. If this is not the case, this method should be overridden.
-        """
-        return eqx.partition(nets, eqx.is_array)
+    Sub-classes should override _loss. This method is a wrapper that adds jit-compilation.
 
-    def loss(self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]) -> tuple[Scalar, Metrics]:
-        """Returns loss and metrics. Called after some number of environment steps.
+    Note: the returned metrics should not have any keys that conflict with gymnax_loop.MetricKey.
+    """
+    return _loss_jit(state, self._loss)
 
-        State arg is donated, meaning callers should not access it after calling.
+  @abc.abstractmethod
+  def _loss(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]
+  ) -> tuple[Scalar, Metrics]:
+    """Returns loss and metrics. Called after some number of environment steps.
 
-        Sub-classes should override _loss. This method is a wrapper that adds jit-compilation.
+    Must be jit-compatible.
+    """
 
-        Note: the returned metrics should not have any keys that conflict with gymnax_loop.MetricKey.
-        """
-        return _loss_jit(state, self._loss)
+  def optimize_from_grads(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], nets_grads: PyTree
+  ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
+    """Optimizes agent state based on gradients of the losses returned by self.loss().
 
-    @abc.abstractmethod
-    def _loss(self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]) -> tuple[Scalar, Metrics]:
-        """Returns loss and metrics. Called after some number of environment steps.
+    Sub-classes should override _optimize_from_grads. This method is a wrapper that adds
+    jit-compilation.
 
-        Must be jit-compatible.
-        """
+    Args:
+        state: The current agent state. Donated, so callers should not access it after calling.
+        nets_grads is the gradient of the loss w.r.t. the agent's networks. Donated,
+            so callers should not access it after calling.
 
-    def optimize_from_grads(
-        self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], nets_grads: PyTree
-    ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
-        """Optimizes agent state based on gradients of the losses returned by self.loss().
+    """
+    return _optimize_from_grads_jit(state, nets_grads, self._optimize_from_grads)
 
-        Sub-classes should override _optimize_from_grads. This method is a wrapper that adds jit-compilation.
+  @abc.abstractmethod
+  def _optimize_from_grads(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], nets_grads: PyTree
+  ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
+    """Optimizes agent state based on gradients of the losses returned by self._loss().
 
-        Args:
-            state: The current agent state. Donated, so callers should not access it after calling.
-            nets_grads is the gradient of the loss w.r.t. the agent's networks. Donated,
-                so callers should not access it after calling.
+    Must be jit-compatible.
+    """
 
-        """
-        return _optimize_from_grads_jit(state, nets_grads, self._optimize_from_grads)
+  @abc.abstractmethod
+  def num_off_policy_optims_per_cycle(self) -> int:
+    """Returns the number of off-policy optimization steps per cycle.
 
-    @abc.abstractmethod
-    def _optimize_from_grads(
-        self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], nets_grads: PyTree
-    ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
-        """Optimizes agent state based on gradients of the losses returned by self._loss().
+    An off-policy optimization step conceptually consists of:
+    - grads = jax.grad(self.loss)(state)
+    - state = self.optimize_from_grads(state, grads).
 
-        Must be jit-compatible.
-        """
-
-    @abc.abstractmethod
-    def num_off_policy_optims_per_cycle(self) -> int:
-        """Returns the number of off-policy optimization steps per cycle.
-
-        An off-policy optimization step conceptually consists of:
-        - grads = jax.grad(self.loss)(state)
-        - state = self.optimize_from_grads(state, grads).
-
-        If 0, then the framework should only do on-policy updates, which consist of:
-        - grads = jax.grad(multiple calls to self.select_action(state), one call to self.loss(state))()
-        - state = self.optimize_from_grads(state, grads)
-        """
+    If 0, then the framework should only do on-policy updates, which consist of:
+    - grads = jax.grad(multiple calls to self.select_action(state), one call to self.loss(state))()
+    - state = self.optimize_from_grads(state, grads)
+    """
