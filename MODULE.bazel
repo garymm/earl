@@ -25,6 +25,13 @@ pip.parse(
     python_version = _PYTHON_VERSION,
     requirements_lock = "//:requirements_linux_x86_64.txt",
 )
+
+# https://github.com/google/orbax/issues/1429
+pip.override(
+    file = "orbax_checkpoint-0.11.1-py3-none-any.whl",
+    patch_strip = 1,
+    patches = ["//tools/patches:orbax-remove-BUILD.patch"],
+)
 use_repo(pip, "pypi")
 # END python dependencies
 

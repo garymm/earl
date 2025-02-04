@@ -1,0 +1,33 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("//tools/py_test:py_test.bzl", "py_test")
+
+py_library(
+    name = "run_experiment",
+    srcs = [
+        "config.py",
+        "run_experiment.py",
+    ],
+    deps = [
+        "//earl:core",
+        "//earl/environment_loop:gymnasium_loop",
+        "//earl/environment_loop:gymnax_loop",
+        "@pypi//draccus",
+        "@pypi//equinox",
+        "@pypi//gymnasium",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jax_loop_utils",
+        "@pypi//jaxtyping",
+        "@pypi//orbax_checkpoint",
+    ],
+)
+
+py_test(
+    name = "test_run_experiment",
+    srcs = ["test_run_experiment.py"],
+    deps = [
+        ":run_experiment",
+        "//earl/agents/random_agent",
+        "@pypi//orbax_checkpoint",
+    ],
+)

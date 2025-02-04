@@ -8,6 +8,8 @@ dependencies = [
     "jax_loop_utils",
     "jax>=0.4.0",
     "jaxtyping>=0.2.0",
+    "orbax-checkpoint==0.11.1",
+    "tensorstore==0.1.68",      # transitive of orbax-checkpoint, pinned to avoid bug https://github.com/google/orbax/issues/1429#issuecomment-2543832552
     "tqdm>=4.0.0",
 ]
 name = "earl"
@@ -41,7 +43,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-exclude = ["test_*.py"]
+exclude = ["test_*.py", "BUILD.bazel"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["earl"]

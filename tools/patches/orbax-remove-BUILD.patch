@@ -1,0 +1,1782 @@
+diff --git a/orbax/checkpoint/BUILD b/orbax/checkpoint/BUILD
+deleted file mode 100644
+index fa73046..0000000
+--- a/orbax/checkpoint/BUILD
++++ /dev/null
+@@ -1,356 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-licenses(["notice"])
+-
+-py_library(
+-    name = "checkpoint",
+-    srcs = ["__init__.py"],
+-    visibility = ["//visibility:public"],
+-    deps = [
+-        ":abstract_checkpoint_manager",
+-        ":aggregate_handlers",
+-        ":args",
+-        ":arrays",
+-        ":checkpoint_manager",
+-        ":checkpoint_managers",
+-        ":checkpoint_utils",
+-        ":checkpointers",
+-        ":future",
+-        ":handlers",
+-        ":logging",
+-        ":msgpack_utils",
+-        ":options",
+-        ":path",
+-        ":test_utils",
+-        ":transform_utils",
+-        ":tree",
+-        ":type_handlers",
+-        ":utils",
+-        ":version",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:array_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:async_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:base_pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:composite_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:handler_registration",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:json_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:proto_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:random_key_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:standard_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-        "//checkpoint/orbax/checkpoint/metadata",
+-        "//checkpoint/orbax/checkpoint/serialization",
+-    ],
+-)
+-
+-py_library(
+-    name = "handlers",
+-    srcs = ["handlers.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/handlers:array_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:async_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:composite_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:handler_registration",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:handler_type_registry",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:json_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:proto_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:random_key_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:standard_checkpoint_handler",
+-    ],
+-)
+-
+-py_library(
+-    name = "checkpoint_args",
+-    srcs = ["checkpoint_args.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/handlers:checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:handler_type_registry",
+-    ],
+-)
+-
+-py_test(
+-    name = "checkpoint_args_test",
+-    srcs = ["checkpoint_args_test.py"],
+-    python_version = "PY3",
+-    deps = [
+-        ":checkpoint_args",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:handler_type_registry",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:standard_checkpoint_handler",
+-    ],
+-)
+-
+-py_library(
+-    name = "args",
+-    srcs = ["args.py"],
+-    deps = [
+-        ":checkpoint_args",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:array_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:composite_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:json_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:proto_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:random_key_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:standard_checkpoint_handler",
+-    ],
+-)
+-
+-py_library(
+-    name = "abstract_checkpoint_manager",
+-    srcs = ["abstract_checkpoint_manager.py"],
+-    deps = [":args"],
+-)
+-
+-py_library(
+-    name = "checkpoint_manager",
+-    srcs = ["checkpoint_manager.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        ":abstract_checkpoint_manager",
+-        ":args",
+-        ":checkpoint_args",
+-        ":logging",
+-        ":options",
+-        ":utils",
+-        "//checkpoint/orbax/checkpoint/_src/checkpoint_managers:save_decision_policy",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:abstract_checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:async_checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:composite_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:handler_registration",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:json_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:proto_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:root_metadata_serialization",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_types",
+-        "//checkpoint/orbax/checkpoint/_src/path:deleter",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-        "//checkpoint/orbax/checkpoint/_src/path:utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "test_utils",
+-    srcs = ["test_utils.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        ":checkpoint_args",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:async_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:step_metadata_serialization",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/multihost:multislice",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-        "//checkpoint/orbax/checkpoint/_src/serialization",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:replica_slices",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_test(
+-    name = "test_utils_test",
+-    srcs = ["test_utils_test.py"],
+-    deps = [
+-        ":test_utils",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-    ],
+-)
+-
+-py_library(
+-    name = "utils",
+-    srcs = ["utils.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/path:async_utils",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "transform_utils",
+-    srcs = ["transform_utils.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "future",
+-    srcs = ["future.py"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/futures:future"],
+-)
+-
+-py_library(
+-    name = "aggregate_handlers",
+-    srcs = ["aggregate_handlers.py"],
+-    deps = [
+-        ":future",
+-        ":msgpack_utils",
+-        ":utils",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:tree",
+-    ],
+-)
+-
+-py_library(
+-    name = "checkpoint_utils",
+-    srcs = ["checkpoint_utils.py"],
+-    deps = [
+-        ":utils",
+-        "//checkpoint/orbax/_src/path/snapshot",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:tree",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:value",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-    ],
+-)
+-
+-py_library(
+-    name = "msgpack_utils",
+-    srcs = ["msgpack_utils.py"],
+-    deps = ["//third_party/py/msgpack"],
+-)
+-
+-py_test(
+-    name = "msgpack_utils_test",
+-    srcs = ["msgpack_utils_test.py"],
+-    deps = [":msgpack_utils"],
+-)
+-
+-py_test(
+-    name = "checkpoint_utils_test",
+-    srcs = ["checkpoint_utils_test.py"],
+-    python_version = "PY3",
+-    deps = [
+-        ":args",
+-        ":checkpoint_manager",
+-        ":checkpoint_utils",
+-        ":test_utils",
+-        ":utils",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:pytree_checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:value",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-    ],
+-)
+-
+-py_test(
+-    name = "transform_utils_test",
+-    srcs = ["transform_utils_test.py"],
+-    deps = [
+-        ":test_utils",
+-        ":transform_utils",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_test(
+-    name = "single_host_test",
+-    srcs = ["single_host_test.py"],
+-    deps = [
+-        ":test_utils",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-        "//orbax/checkpoint/_src/handlers:standard_checkpoint_handler_test_utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "conftest",
+-    srcs = ["conftest.py"],
+-)
+-
+-py_library(
+-    name = "options",
+-    srcs = ["options.py"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/multihost"],
+-)
+-
+-py_library(
+-    name = "version",
+-    srcs = ["version.py"],
+-)
+-
+-py_library(
+-    name = "logging",
+-    srcs = ["logging.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/logging:abstract_logger",
+-        "//checkpoint/orbax/checkpoint/_src/logging:cloud_logger",  # buildcleaner:keep
+-        "//checkpoint/orbax/checkpoint/_src/logging:composite_logger",
+-        "//checkpoint/orbax/checkpoint/_src/logging:standard_logger",
+-        "//checkpoint/orbax/checkpoint/_src/logging:step_statistics",
+-    ],
+-)
+-
+-py_library(
+-    name = "tree",
+-    srcs = ["tree.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/tree:types",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "path",
+-    srcs = ["path.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/path:async_utils",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_defaults",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_types",
+-        "//checkpoint/orbax/checkpoint/_src/path:deleter",
+-        "//checkpoint/orbax/checkpoint/_src/path:format_utils",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-    ],
+-)
+-
+-py_library(
+-    name = "checkpointers",
+-    srcs = ["checkpointers.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:abstract_checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:async_checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:pytree_checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:standard_checkpointer",
+-    ],
+-)
+-
+-py_library(
+-    name = "type_handlers",
+-    srcs = ["type_handlers.py"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/serialization:type_handlers"],
+-)
+-
+-py_library(
+-    name = "arrays",
+-    srcs = ["arrays.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/arrays:abstract_arrays",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-    ],
+-)
+-
+-py_library(
+-    name = "checkpoint_managers",
+-    srcs = ["checkpoint_managers.py"],
+-    deps = [
+-        ":abstract_checkpoint_manager",
+-        ":checkpoint_manager",
+-        "//checkpoint/orbax/checkpoint/_src/checkpoint_managers:save_decision_policy",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/BUILD b/orbax/checkpoint/_src/BUILD
+deleted file mode 100644
+index 47e2b7f..0000000
+--- a/orbax/checkpoint/_src/BUILD
++++ /dev/null
+@@ -1,23 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "asyncio_utils",
+-    srcs = ["asyncio_utils.py"],
+-)
+-
+-py_test(
+-    name = "asyncio_utils_test",
+-    srcs = ["asyncio_utils_test.py"],
+-    deps = [":asyncio_utils"],
+-)
+-
+-py_library(
+-    name = "composite",
+-    srcs = ["composite.py"],
+-)
+-
+-py_test(
+-    name = "composite_test",
+-    srcs = ["composite_test.py"],
+-    deps = [":composite"],
+-)
+diff --git a/orbax/checkpoint/_src/arrays/BUILD b/orbax/checkpoint/_src/arrays/BUILD
+deleted file mode 100644
+index 8bf90d4..0000000
+--- a/orbax/checkpoint/_src/arrays/BUILD
++++ /dev/null
+@@ -1,80 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "types",
+-    srcs = ["types.py"],
+-    srcs_version = "PY3",
+-)
+-
+-py_library(
+-    name = "numpy_utils",
+-    srcs = ["numpy_utils.py"],
+-    srcs_version = "PY3",
+-    deps = [":types"],
+-)
+-
+-py_test(
+-    name = "numpy_utils_test",
+-    srcs = ["numpy_utils_test.py"],
+-    python_version = "PY3",
+-    srcs_version = "PY3",
+-    deps = [":numpy_utils"],
+-)
+-
+-py_library(
+-    name = "fragments",
+-    srcs = ["fragments.py"],
+-    deps = [
+-        ":numpy_utils",
+-        ":types",
+-    ],
+-)
+-
+-py_test(
+-    name = "fragments_test",
+-    srcs = ["fragments_test.py"],
+-    python_version = "PY3",
+-    srcs_version = "PY3",
+-    deps = [":fragments"],
+-)
+-
+-py_library(
+-    name = "subchunking",
+-    srcs = ["subchunking.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        ":fragments",
+-        ":types",
+-    ],
+-)
+-
+-py_library(
+-    name = "abstract_arrays",
+-    srcs = ["abstract_arrays.py"],
+-    deps = [
+-        ":types",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:sharding",
+-    ],
+-)
+-
+-py_test(
+-    name = "abstract_arrays_test",
+-    srcs = ["abstract_arrays_test.py"],
+-    deps = [
+-        ":abstract_arrays",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-    ],
+-)
+-
+-py_test(
+-    name = "subchunking_test",
+-    srcs = ["subchunking_test.py"],
+-    args = ["--vmodule=subchunking=1"],
+-    python_version = "PY3",
+-    srcs_version = "PY3",
+-    deps = [
+-        ":fragments",
+-        ":subchunking",
+-        ":types",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/checkpoint_managers/BUILD b/orbax/checkpoint/_src/checkpoint_managers/BUILD
+deleted file mode 100644
+index af7f665..0000000
+--- a/orbax/checkpoint/_src/checkpoint_managers/BUILD
++++ /dev/null
+@@ -1,6 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "save_decision_policy",
+-    srcs = ["save_decision_policy.py"],
+-)
+diff --git a/orbax/checkpoint/_src/checkpointers/BUILD b/orbax/checkpoint/_src/checkpointers/BUILD
+deleted file mode 100644
+index c4eec05..0000000
+--- a/orbax/checkpoint/_src/checkpointers/BUILD
++++ /dev/null
+@@ -1,70 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "abstract_checkpointer",
+-    srcs = ["abstract_checkpointer.py"],
+-    deps = ["//checkpoint/orbax/checkpoint:version"],
+-)
+-
+-py_library(
+-    name = "checkpointer",
+-    srcs = ["checkpointer.py"],
+-    deps = [
+-        ":abstract_checkpointer",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:synchronization",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:composite_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:step_metadata_serialization",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_defaults",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_types",
+-    ],
+-)
+-
+-py_library(
+-    name = "pytree_checkpointer",
+-    srcs = ["pytree_checkpointer.py"],
+-    deps = [
+-        ":checkpointer",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-    ],
+-)
+-
+-py_library(
+-    name = "standard_checkpointer",
+-    srcs = ["standard_checkpointer.py"],
+-    deps = [
+-        ":async_checkpointer",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:standard_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_types",
+-    ],
+-)
+-
+-py_library(
+-    name = "async_checkpointer",
+-    srcs = ["async_checkpointer.py"],
+-    deps = [
+-        ":checkpointer",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/futures:synchronization",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:async_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/path:async_utils",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_types",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/futures/BUILD b/orbax/checkpoint/_src/futures/BUILD
+deleted file mode 100644
+index 314845e..0000000
+--- a/orbax/checkpoint/_src/futures/BUILD
++++ /dev/null
+@@ -1,22 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "synchronization",
+-    srcs = ["synchronization.py"],
+-)
+-
+-py_test(
+-    name = "synchronization_test",
+-    srcs = ["synchronization_test.py"],
+-    deps = [":synchronization"],
+-)
+-
+-py_library(
+-    name = "future",
+-    srcs = ["future.py"],
+-    deps = [
+-        ":synchronization",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/handlers/BUILD b/orbax/checkpoint/_src/handlers/BUILD
+deleted file mode 100644
+index 29834ac..0000000
+--- a/orbax/checkpoint/_src/handlers/BUILD
++++ /dev/null
+@@ -1,266 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "checkpoint_handler",
+-    srcs = ["checkpoint_handler.py"],
+-)
+-
+-py_library(
+-    name = "composite_checkpoint_handler",
+-    srcs = ["composite_checkpoint_handler.py"],
+-    deps = [
+-        ":async_checkpoint_handler",
+-        ":checkpoint_handler",
+-        ":handler_registration",
+-        ":handler_type_registry",
+-        ":proto_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src:composite",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/futures:synchronization",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:step_metadata_serialization",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_defaults",
+-        "//checkpoint/orbax/checkpoint/_src/path:atomicity_types",
+-    ],
+-)
+-
+-py_test(
+-    name = "composite_checkpoint_handler_test",
+-    srcs = ["composite_checkpoint_handler_test.py"],
+-    deps = [
+-        ":checkpoint_handler",
+-        ":composite_checkpoint_handler",
+-        ":handler_registration",
+-        ":json_checkpoint_handler",
+-        ":proto_checkpoint_handler",
+-        ":standard_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:args",
+-        "//checkpoint/orbax/checkpoint:logging",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:step_metadata_serialization",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:value",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-    ],
+-)
+-
+-py_library(
+-    name = "pytree_checkpoint_handler",
+-    srcs = ["pytree_checkpoint_handler.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        ":async_checkpoint_handler",
+-        ":base_pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:aggregate_handlers",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:transform_utils",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:array_metadata_store",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:empty_values",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:tree",
+-        "//checkpoint/orbax/checkpoint/_src/serialization",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-        "//checkpoint/orbax/checkpoint/_src/tree:types",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "base_pytree_checkpoint_handler",
+-    srcs = ["base_pytree_checkpoint_handler.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        ":async_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/futures:synchronization",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:array_metadata_store",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:empty_values",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:tree",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/path:format_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:types",
+-        "//checkpoint/orbax/checkpoint/_src/tree:types",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "json_checkpoint_handler",
+-    srcs = ["json_checkpoint_handler.py"],
+-    deps = [
+-        ":async_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-    ],
+-)
+-
+-py_library(
+-    name = "async_checkpoint_handler",
+-    srcs = ["async_checkpoint_handler.py"],
+-    deps = [
+-        ":checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-    ],
+-)
+-
+-py_library(
+-    name = "array_checkpoint_handler",
+-    srcs = ["array_checkpoint_handler.py"],
+-    deps = [
+-        ":async_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:aggregate_handlers",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-    ],
+-)
+-
+-py_test(
+-    name = "json_checkpoint_handler_test",
+-    srcs = ["json_checkpoint_handler_test.py"],
+-    python_version = "PY3",
+-    deps = [
+-        ":json_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "proto_checkpoint_handler",
+-    srcs = ["proto_checkpoint_handler.py"],
+-    deps = [
+-        ":async_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-    ],
+-)
+-
+-py_library(
+-    name = "standard_checkpoint_handler",
+-    srcs = ["standard_checkpoint_handler.py"],
+-    deps = [
+-        ":async_checkpoint_handler",
+-        ":pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint:checkpoint_utils",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:pytree_metadata_options",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:tree",
+-        "//checkpoint/orbax/checkpoint/_src/tree:types",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-# BEGIN OSS-INTERNAL
+-# TODO(yaning): Expose this test in OSS.
+-py_test(
+-    name = "proto_checkpoint_handler_test",
+-    srcs = ["proto_checkpoint_handler_test.py"],
+-    python_version = "PY3",
+-    deps = [
+-        ":proto_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/proto/testing:foo_py_pb2",
+-    ],
+-)
+-
+-py_library(
+-    name = "standard_checkpoint_handler_test_utils",
+-    srcs = ["standard_checkpoint_handler_test_utils.py"],
+-    deps = [
+-        ":standard_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-    ],
+-)
+-
+-py_library(
+-    name = "random_key_checkpoint_handler",
+-    srcs = ["random_key_checkpoint_handler.py"],
+-    deps = [
+-        ":array_checkpoint_handler",
+-        ":async_checkpoint_handler",
+-        ":composite_checkpoint_handler",
+-        ":json_checkpoint_handler",
+-        ":pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-    ],
+-)
+-
+-py_test(
+-    name = "random_key_checkpoint_handler_test",
+-    srcs = ["random_key_checkpoint_handler_test.py"],
+-    python_version = "PY3",
+-    deps = [
+-        ":composite_checkpoint_handler",
+-        ":random_key_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:args",
+-    ],
+-)
+-
+-py_library(
+-    name = "handler_registration",
+-    srcs = ["handler_registration.py"],
+-    deps = [
+-        ":checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-    ],
+-)
+-
+-py_test(
+-    name = "handler_registration_test",
+-    srcs = ["handler_registration_test.py"],
+-    deps = [
+-        ":checkpoint_handler",
+-        ":handler_registration",
+-        ":standard_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint:checkpoint_args",
+-    ],
+-)
+-
+-py_library(
+-    name = "handler_type_registry",
+-    srcs = ["handler_type_registry.py"],
+-    deps = [":checkpoint_handler"],
+-)
+-
+-py_test(
+-    name = "handler_type_registry_test",
+-    srcs = ["handler_type_registry_test.py"],
+-    deps = [
+-        ":checkpoint_handler",
+-        ":handler_type_registry",
+-        ":standard_checkpoint_handler",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/logging/BUILD b/orbax/checkpoint/_src/logging/BUILD
+deleted file mode 100644
+index 998ea02..0000000
+--- a/orbax/checkpoint/_src/logging/BUILD
++++ /dev/null
+@@ -1,52 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "abstract_logger",
+-    srcs = ["abstract_logger.py"],
+-)
+-
+-py_library(
+-    name = "step_statistics",
+-    srcs = ["step_statistics.py"],
+-)
+-
+-py_library(
+-    name = "cloud_logger",
+-    srcs = ["cloud_logger.py"],
+-    deps = [":abstract_logger"],
+-)
+-
+-py_test(
+-    name = "cloud_logger_test",
+-    srcs = ["cloud_logger_test.py"],
+-    deps = [":cloud_logger"],
+-)
+-
+-py_library(
+-    name = "standard_logger",
+-    srcs = ["standard_logger.py"],
+-    deps = [":abstract_logger"],
+-)
+-
+-py_test(
+-    name = "standard_logger_test",
+-    srcs = ["standard_logger_test.py"],
+-    deps = [":standard_logger"],
+-)
+-
+-py_library(
+-    name = "composite_logger",
+-    srcs = ["composite_logger.py"],
+-    deps = [":abstract_logger"],
+-)
+-
+-py_test(
+-    name = "composite_logger_test",
+-    srcs = ["composite_logger_test.py"],
+-    deps = [
+-        ":abstract_logger",
+-        ":cloud_logger",
+-        ":composite_logger",
+-        ":standard_logger",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/metadata/BUILD b/orbax/checkpoint/_src/metadata/BUILD
+deleted file mode 100644
+index dc948fe..0000000
+--- a/orbax/checkpoint/_src/metadata/BUILD
++++ /dev/null
+@@ -1,178 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "tree_rich_types",
+-    srcs = ["tree_rich_types.py"],
+-    deps = [
+-        ":pytree_metadata_options",
+-        ":value_metadata_entry",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_test(
+-    name = "tree_rich_types_test",
+-    srcs = ["tree_rich_types_test.py"],
+-    deps = [
+-        ":tree_rich_types",
+-        "//checkpoint/orbax/checkpoint/_src/testing:test_tree_utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "tree",
+-    srcs = ["tree.py"],
+-    deps = [
+-        ":empty_values",
+-        ":pytree_metadata_options",
+-        ":tree_rich_types",
+-        ":value",
+-        ":value_metadata_entry",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:types",
+-        "//checkpoint/orbax/checkpoint/_src/tree:types",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_test(
+-    name = "tree_test",
+-    srcs = ["tree_test.py"],
+-    deps = [
+-        ":tree",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:types",
+-        "//checkpoint/orbax/checkpoint/_src/testing:test_tree_utils",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "value",
+-    srcs = ["value.py"],
+-    deps = [
+-        ":sharding",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-    ],
+-)
+-
+-py_library(
+-    name = "sharding",
+-    srcs = ["sharding.py"],
+-)
+-
+-py_test(
+-    name = "sharding_test",
+-    srcs = ["sharding_test.py"],
+-    deps = [":sharding"],
+-)
+-
+-py_library(
+-    name = "checkpoint",
+-    srcs = ["checkpoint.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src:composite",
+-        "//checkpoint/orbax/checkpoint/_src/logging:step_statistics",
+-    ],
+-)
+-
+-py_test(
+-    name = "checkpoint_test",
+-    srcs = ["checkpoint_test.py"],
+-    deps = [
+-        ":checkpoint",
+-        ":root_metadata_serialization",
+-        ":step_metadata_serialization",
+-        "//checkpoint/orbax/checkpoint/_src/logging:step_statistics",
+-    ],
+-)
+-
+-py_library(
+-    name = "root_metadata_serialization",
+-    srcs = ["root_metadata_serialization.py"],
+-    deps = [
+-        ":checkpoint",
+-        ":metadata_serialization_utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "step_metadata_serialization",
+-    srcs = ["step_metadata_serialization.py"],
+-    deps = [
+-        ":checkpoint",
+-        ":metadata_serialization_utils",
+-        "//checkpoint/orbax/checkpoint/_src/logging:step_statistics",
+-    ],
+-)
+-
+-py_library(
+-    name = "metadata_serialization_utils",
+-    srcs = ["metadata_serialization_utils.py"],
+-)
+-
+-py_library(
+-    name = "pytree_metadata_options",
+-    srcs = ["pytree_metadata_options.py"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/tree:utils"],
+-)
+-
+-py_library(
+-    name = "value_metadata_entry",
+-    srcs = ["value_metadata_entry.py"],
+-    deps = [
+-        ":empty_values",
+-        ":pytree_metadata_options",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:types",
+-    ],
+-)
+-
+-py_library(
+-    name = "empty_values",
+-    srcs = ["empty_values.py"],
+-    deps = [
+-        ":pytree_metadata_options",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_test(
+-    name = "empty_values_test",
+-    srcs = ["empty_values_test.py"],
+-    python_version = "PY3",
+-    srcs_version = "PY3",
+-    deps = [
+-        ":empty_values",
+-        ":pytree_metadata_options",
+-        "//checkpoint/orbax/checkpoint/_src/testing:test_tree_utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "array_metadata",
+-    srcs = ["array_metadata.py"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/arrays:types"],
+-)
+-
+-py_library(
+-    name = "array_metadata_store",
+-    srcs = ["array_metadata_store.py"],
+-    deps = [
+-        ":array_metadata",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:types",
+-    ],
+-)
+-
+-py_test(
+-    name = "array_metadata_store_test",
+-    srcs = ["array_metadata_store_test.py"],
+-    deps = [
+-        ":array_metadata",
+-        ":array_metadata_store",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/multihost/BUILD b/orbax/checkpoint/_src/multihost/BUILD
+deleted file mode 100644
+index bf1c5a4..0000000
+--- a/orbax/checkpoint/_src/multihost/BUILD
++++ /dev/null
+@@ -1,12 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "multihost",
+-    srcs = ["multihost.py"],
+-)
+-
+-py_library(
+-    name = "multislice",
+-    srcs = ["multislice.py"],
+-    deps = [":multihost"],
+-)
+diff --git a/orbax/checkpoint/_src/path/BUILD b/orbax/checkpoint/_src/path/BUILD
+deleted file mode 100644
+index f038061..0000000
+--- a/orbax/checkpoint/_src/path/BUILD
++++ /dev/null
+@@ -1,133 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "utils",
+-    srcs = ["utils.py"],
+-    srcs_version = "PY3",
+-    deps = ["//checkpoint/orbax/checkpoint:options"],
+-)
+-
+-py_library(
+-    name = "path",
+-    srcs = ["__init__.py"],
+-)
+-
+-py_library(
+-    name = "step",
+-    srcs = ["step.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:step_metadata_serialization",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-    ],
+-)
+-
+-py_test(
+-    name = "step_test",
+-    srcs = ["step_test.py"],
+-    deps = [
+-        ":atomicity",
+-        ":step",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:step_metadata_serialization",
+-    ],
+-)
+-
+-py_library(
+-    name = "deleter",
+-    srcs = ["deleter.py"],
+-    deps = [
+-        ":step",
+-        "//checkpoint/orbax/checkpoint:utils",
+-    ],
+-)
+-
+-py_test(
+-    name = "deleter_test",
+-    srcs = ["deleter_test.py"],
+-    deps = [
+-        ":deleter",
+-        ":step",
+-    ],
+-)
+-
+-py_library(
+-    name = "async_utils",
+-    srcs = ["async_utils.py"],
+-    deps = [
+-        ":step",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "atomicity",
+-    srcs = ["atomicity.py"],
+-    deps = [
+-        ":async_utils",
+-        ":atomicity_types",
+-        ":path",
+-        ":step",
+-        ":utils",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/futures:synchronization",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:step_metadata_serialization",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-    ],
+-)
+-
+-py_test(
+-    name = "atomicity_test",
+-    srcs = ["atomicity_test.py"],
+-    deps = [
+-        ":atomicity",
+-        ":atomicity_types",
+-        ":step",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-    ],
+-)
+-
+-py_library(
+-    name = "atomicity_types",
+-    srcs = ["atomicity_types.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-    ],
+-)
+-
+-py_library(
+-    name = "atomicity_defaults",
+-    srcs = ["atomicity_defaults.py"],
+-    deps = [
+-        ":atomicity",
+-        ":atomicity_types",
+-        ":step",
+-    ],
+-)
+-
+-py_library(
+-    name = "format_utils",
+-    srcs = ["format_utils.py"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/metadata:checkpoint"],
+-)
+-
+-py_test(
+-    name = "format_utils_test",
+-    srcs = ["format_utils_test.py"],
+-    data = ["//checkpoint/orbax/checkpoint/testing:aggregate_checkpoints"],
+-    deps = [
+-        ":format_utils",
+-        "//checkpoint/orbax/checkpoint:args",
+-        "//checkpoint/orbax/checkpoint:checkpoint_manager",
+-        "//checkpoint/orbax/checkpoint/_src/checkpointers:checkpointer",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:standard_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/path/snapshot/BUILD b/orbax/checkpoint/_src/path/snapshot/BUILD
+deleted file mode 100644
+index 2c0d856..0000000
+--- a/orbax/checkpoint/_src/path/snapshot/BUILD
++++ /dev/null
+@@ -1,15 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "snapshot",
+-    srcs = ["snapshot.py"],
+-    srcs_version = "PY3",
+-    deps = ["//checkpoint/orbax/checkpoint/_src/path:utils"],
+-)
+-
+-py_test(
+-    name = "snapshot_test",
+-    srcs = ["snapshot_test.py"],
+-    srcs_version = "PY3",
+-    deps = [":snapshot"],
+-)
+diff --git a/orbax/checkpoint/_src/serialization/BUILD b/orbax/checkpoint/_src/serialization/BUILD
+deleted file mode 100644
+index 03a102c..0000000
+--- a/orbax/checkpoint/_src/serialization/BUILD
++++ /dev/null
+@@ -1,102 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "tensorstore_utils",
+-    srcs = ["tensorstore_utils.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/arrays:subchunking",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:array_metadata",
+-    ],
+-)
+-
+-py_library(
+-    name = "types",
+-    srcs = ["types.py"],
+-    deps = [
+-        ":serialization",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:empty_values",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:pytree_metadata_options",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:value",
+-    ],
+-)
+-
+-py_library(
+-    name = "type_handlers",
+-    srcs = ["type_handlers.py"],
+-    deps = [
+-        ":replica_slices",
+-        ":serialization",
+-        ":tensorstore_utils",
+-        ":types",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:subchunking",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:array_metadata_store",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:empty_values",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:sharding",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:value",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/multihost:multislice",
+-        "//checkpoint/orbax/checkpoint/_src/path:async_utils",
+-        "//checkpoint/orbax/checkpoint/_src/path:format_utils",
+-    ],
+-)
+-
+-py_test(
+-    name = "tensorstore_utils_test",
+-    srcs = ["tensorstore_utils_test.py"],
+-    python_version = "PY3",
+-    srcs_version = "PY3",
+-    deps = [
+-        ":tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:subchunking",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-    ],
+-)
+-
+-py_library(
+-    name = "serialization",
+-    srcs = ["serialization.py"],
+-    deps = [
+-        ":replica_slices",
+-        ":tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:fragments",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:numpy_utils",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-    ],
+-)
+-
+-py_library(
+-    name = "replica_slices",
+-    srcs = ["replica_slices.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/arrays:fragments",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:numpy_utils",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-    ],
+-)
+-
+-py_test(
+-    name = "serialization_test",
+-    srcs = ["serialization_test.py"],
+-    python_version = "PY3",
+-    deps = [
+-        ":serialization",
+-        ":tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint/_src:asyncio_utils",
+-        "//checkpoint/orbax/checkpoint/_src/futures:future",
+-    ],
+-)
+-
+-py_test(
+-    name = "replica_slices_test",
+-    srcs = ["replica_slices_test.py"],
+-    deps = [":replica_slices"],
+-)
+diff --git a/orbax/checkpoint/_src/testing/BUILD b/orbax/checkpoint/_src/testing/BUILD
+deleted file mode 100644
+index 387ea90..0000000
+--- a/orbax/checkpoint/_src/testing/BUILD
++++ /dev/null
+@@ -1,11 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "test_tree_utils",
+-    srcs = ["test_tree_utils.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/metadata:tree",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:tree_rich_types",
+-    ],
+-)
+diff --git a/orbax/checkpoint/_src/tree/BUILD b/orbax/checkpoint/_src/tree/BUILD
+deleted file mode 100644
+index f000360..0000000
+--- a/orbax/checkpoint/_src/tree/BUILD
++++ /dev/null
+@@ -1,26 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "types",
+-    srcs = ["types.py"],
+-    srcs_version = "PY3",
+-)
+-
+-py_library(
+-    name = "utils",
+-    srcs = ["utils.py"],
+-    deps = [
+-        ":types",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:abstract_arrays",
+-    ],
+-)
+-
+-py_test(
+-    name = "utils_test",
+-    srcs = ["utils_test.py"],
+-    deps = [
+-        ":utils",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint/_src/testing:test_tree_utils",
+-    ],
+-)
+diff --git a/orbax/checkpoint/experimental/emergency/BUILD b/orbax/checkpoint/experimental/emergency/BUILD
+deleted file mode 100644
+index 3cd5466..0000000
+--- a/orbax/checkpoint/experimental/emergency/BUILD
++++ /dev/null
+@@ -1,93 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "checkpoint_manager",
+-    srcs = ["checkpoint_manager.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        ":local_checkpoint_data_debugging",
+-        ":mesh_consistency",
+-        "//checkpoint/orbax/checkpoint:abstract_checkpoint_manager",
+-        "//checkpoint/orbax/checkpoint:args",
+-        "//checkpoint/orbax/checkpoint:checkpoint_manager",
+-        "//checkpoint/orbax/checkpoint:checkpoint_utils",
+-        "//checkpoint/orbax/checkpoint:logging",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/multihost:multislice",
+-        "//checkpoint/orbax/checkpoint/_src/path:step",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-    ],
+-)
+-
+-py_library(
+-    name = "test_utils",
+-    srcs = ["test_utils.py"],
+-    srcs_version = "PY3",
+-    deps = [
+-        ":checkpoint_manager",
+-        ":mesh_consistency",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:path",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint:utils",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/multihost:multislice",
+-    ],
+-)
+-
+-py_library(
+-    name = "multihost",
+-    srcs = ["multihost.py"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/multihost"],
+-)
+-
+-py_library(
+-    name = "replicator_checkpoint_manager",
+-    srcs = ["replicator_checkpoint_manager.py"],
+-    deps = [
+-        ":mesh_consistency",
+-        "//checkpoint/orbax/checkpoint:abstract_checkpoint_manager",
+-        "//checkpoint/orbax/checkpoint:args",
+-        "//checkpoint/orbax/checkpoint:checkpoint_manager",
+-        "//checkpoint/orbax/checkpoint:path",
+-        "//checkpoint/orbax/checkpoint/_src:composite",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:handler_registration",
+-        "//checkpoint/orbax/checkpoint/_src/handlers:pytree_checkpoint_handler",
+-        "//checkpoint/orbax/checkpoint/_src/multihost",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-    ],
+-)
+-
+-py_library(
+-    name = "mesh_consistency",
+-    srcs = ["mesh_consistency.py"],
+-    deps = [
+-        ":multihost",
+-        "//checkpoint/orbax/checkpoint:options",
+-        "//checkpoint/orbax/checkpoint:path",
+-    ],
+-)
+-
+-py_library(
+-    name = "local_checkpoint_data_debugging",
+-    srcs = ["local_checkpoint_data_debugging.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/arrays:abstract_arrays",
+-        "//checkpoint/orbax/checkpoint/_src/arrays:types",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:type_handlers",
+-        "//checkpoint/orbax/checkpoint/_src/serialization:types",
+-        "//checkpoint/orbax/checkpoint/_src/tree:utils",
+-    ],
+-)
+-
+-py_library(
+-    name = "integration_test_utils",
+-    srcs = ["integration_test_utils.py"],
+-    deps = [
+-        ":checkpoint_manager",
+-        "//checkpoint/orbax/checkpoint:test_utils",
+-        "//checkpoint/orbax/checkpoint/_src/multihost:multislice",
+-    ],
+-)
+diff --git a/orbax/checkpoint/metadata/BUILD b/orbax/checkpoint/metadata/BUILD
+deleted file mode 100644
+index 36aaeb5..0000000
+--- a/orbax/checkpoint/metadata/BUILD
++++ /dev/null
+@@ -1,30 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "metadata",
+-    srcs = ["__init__.py"],
+-    visibility = ["//visibility:public"],
+-    deps = [
+-        ":tree",
+-        ":value",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:checkpoint",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:sharding",
+-        "//checkpoint/orbax/checkpoint/_src/metadata:value",
+-    ],
+-)
+-
+-py_library(
+-    name = "value",
+-    srcs = ["value.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/metadata:value",
+-    ],
+-)
+-
+-py_library(
+-    name = "tree",
+-    srcs = ["tree.py"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/metadata:tree",
+-    ],
+-)
+diff --git a/orbax/checkpoint/multihost/BUILD b/orbax/checkpoint/multihost/BUILD
+deleted file mode 100644
+index dfada54..0000000
+--- a/orbax/checkpoint/multihost/BUILD
++++ /dev/null
+@@ -1,13 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "multihost",
+-    srcs = ["__init__.py"],
+-    visibility = ["//visibility:public"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/multihost"],
+-)
+-
+-py_library(
+-    name = "multislice",
+-    srcs = ["multislice.py"],
+-)
+diff --git a/orbax/checkpoint/proto/testing/BUILD b/orbax/checkpoint/proto/testing/BUILD
+deleted file mode 100644
+index da0703c..0000000
+--- a/orbax/checkpoint/proto/testing/BUILD
++++ /dev/null
+@@ -1,13 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-licenses(["notice"])
+-
+-proto_library(
+-    name = "foo_proto",
+-    srcs = ["foo.proto"],
+-)
+-
+-py_proto_library(
+-    name = "foo_py_pb2",
+-    deps = [":foo_proto"],
+-)
+diff --git a/orbax/checkpoint/serialization/BUILD b/orbax/checkpoint/serialization/BUILD
+deleted file mode 100644
+index 54538fb..0000000
+--- a/orbax/checkpoint/serialization/BUILD
++++ /dev/null
+@@ -1,17 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-py_library(
+-    name = "serialization",
+-    srcs = ["__init__.py"],
+-    visibility = ["//visibility:public"],
+-    deps = [
+-        ":tensorstore_utils",
+-        "//checkpoint/orbax/checkpoint/_src/serialization",
+-    ],
+-)
+-
+-py_library(
+-    name = "tensorstore_utils",
+-    srcs = ["tensorstore_utils.py"],
+-    deps = ["//checkpoint/orbax/checkpoint/_src/serialization:tensorstore_utils"],
+-)
+diff --git a/orbax/checkpoint/testing/BUILD b/orbax/checkpoint/testing/BUILD
+deleted file mode 100644
+index 7eb7c80..0000000
+--- a/orbax/checkpoint/testing/BUILD
++++ /dev/null
+@@ -1,19 +0,0 @@
+-package(default_visibility = ["//visibility:public"])
+-
+-filegroup(
+-    name = "aggregate_checkpoints",
+-    srcs = glob([
+-        "aggregate_all.checkpoint/**/*",
+-        "aggregate_all.real/**/*",
+-        "aggregate_some.checkpoint/**/*",
+-    ]),
+-)
+-
+-py_library(
+-    name = "testing",
+-    srcs = ["__init__.py"],
+-    visibility = ["//visibility:public"],
+-    deps = [
+-        "//checkpoint/orbax/checkpoint/_src/testing:test_tree_utils",
+-    ],
+-)
+diff --git a/orbax_checkpoint-0.11.1.dist-info/RECORD b/orbax_checkpoint-0.11.1.dist-info/RECORD
+index 25f4e3e..5980775 100644
+--- a/orbax_checkpoint-0.11.1.dist-info/RECORD
++++ b/orbax_checkpoint-0.11.1.dist-info/RECORD
+@@ -1,4 +1,3 @@
+-orbax/checkpoint/BUILD,sha256=bGIeeFEHqF1kPHn8AkPa2YXF7ubulL56cAu698YqBtc,12111
+ orbax/checkpoint/__init__.py,sha256=L8I5AN_6ieCmWW7diphEDuyJm52I40a5_3LlOJ4jX-I,4004
+ orbax/checkpoint/abstract_checkpoint_manager.py,sha256=F9onWioE7KpBEHfReEyVvz5BMVfESrn4ldSI2jCPhiI,11853
+ orbax/checkpoint/aggregate_handlers.py,sha256=d8BFUyMI0T4DEG8oASZHtnt1rwJ8FMnEaeHD8p5ZXT4,3526
+@@ -28,13 +27,11 @@ orbax/checkpoint/tree.py,sha256=V0LnFZ0B3TgmRBYkwj7TgNOdAoJzOQpIfo8gi262SNs,997
+ orbax/checkpoint/type_handlers.py,sha256=B41Mqn2dRwWLqf0-Wc0p1N7wimJEI40oXDCzSXdG4oU,3220
+ orbax/checkpoint/utils.py,sha256=cgUx0uRrNEpoi4uoyd1vl6BCd1NeTcdPQP8aH-NnyZ8,6794
+ orbax/checkpoint/version.py,sha256=R5fMAppJn0S0imlgpYNM1nfCV2M21K9I8QIVXQJq3a4,984
+-orbax/checkpoint/_src/BUILD,sha256=MH3QeFuPOgqiuI8zS2rCu5bqhGqwFRBw-Z1tBH1RGIA,414
+ orbax/checkpoint/_src/README.md,sha256=y1gWZ2_EHkGviJfTn9tEhhDM-BkKAXbhd1L9Qh7YXWU,300
+ orbax/checkpoint/_src/asyncio_utils.py,sha256=zBWVIugHigzMs5X8KE732VKV7fOg737H9k7cltFJ8Nw,1508
+ orbax/checkpoint/_src/asyncio_utils_test.py,sha256=ZZK4jvVW-8gqD4W4sR_a9D4mlL2PDJ9QAnEjs-Ury-I,8378
+ orbax/checkpoint/_src/composite.py,sha256=1z4PIyIY1uE9q9F6kH9TrPiUS1Gz9ZSMbd90fnTbuwM,3286
+ orbax/checkpoint/_src/composite_test.py,sha256=wGAxqFaptKmkBG0gM--J_iy3_xdObZzIkNsQCsdFuzU,3456
+-orbax/checkpoint/_src/arrays/BUILD,sha256=p5TI0rtn_iUfSccs0_pWDfzzRnsn0X6Vm7dAAgxm1C4,1515
+ orbax/checkpoint/_src/arrays/abstract_arrays.py,sha256=nkymKioKz4OwVlRXQha1LIPZmf7cBJy7r81WG-MQKS4,3097
+ orbax/checkpoint/_src/arrays/abstract_arrays_test.py,sha256=rua0qvYez0Qo1oi5Lgvh7bmg9HpTfRwGzGGZ9_c4ii8,3972
+ orbax/checkpoint/_src/arrays/fragments.py,sha256=7EPiN4pPBCzVO6WwCc3mmZkG331WK8g2AOUvbmAsMgw,9697
+@@ -44,19 +41,15 @@ orbax/checkpoint/_src/arrays/numpy_utils_test.py,sha256=B6uPK1EC0IJ3g_FN7i0zvj2I
+ orbax/checkpoint/_src/arrays/subchunking.py,sha256=Lsug6cs2F4luC_YmGlmwJUyRUeEQJCSjKgwxbaECJZ0,10314
+ orbax/checkpoint/_src/arrays/subchunking_test.py,sha256=kNKDHovVi4Ta71IybG9YNzYsfyv2fszuQ2Fme2I5D6U,20346
+ orbax/checkpoint/_src/arrays/types.py,sha256=LdKPpzxxkLJUIWtF1uaLGVFsJJQS_rTNICNWP43PVyg,1518
+-orbax/checkpoint/_src/checkpoint_managers/BUILD,sha256=iwd4u_cher2kYROYumy1bLb8q-oJSYY1xyJcUbfQoX0,144
+ orbax/checkpoint/_src/checkpoint_managers/save_decision_policy.py,sha256=7LofeHfrGPS3tze9NLnuM1nKw6tdno9XIXVnqB5OYtc,3771
+-orbax/checkpoint/_src/checkpointers/BUILD,sha256=P4Z_8TqO5hYoAErX3WLr-8xIz1Cys4-S0lCtFZJVov0,2711
+ orbax/checkpoint/_src/checkpointers/abstract_checkpointer.py,sha256=kXtf7ARoaJPppaQFqVjvd7sB7WMR7ovOY3Q-c96PyZM,3015
+ orbax/checkpoint/_src/checkpointers/async_checkpointer.py,sha256=YVTYt3Me_j7AWF49Fe55oyk9ieDWHpIVNhuml4ZtGt0,17732
+ orbax/checkpoint/_src/checkpointers/checkpointer.py,sha256=qNjE86EPY_AQO1P2oCT26AyjOhay3Lm_sAsW5J0gr5w,12299
+ orbax/checkpoint/_src/checkpointers/pytree_checkpointer.py,sha256=f4pXIkNTVeE7mdDEKF5kgRDGORLwnGpStIzidLPNM2g,1451
+ orbax/checkpoint/_src/checkpointers/standard_checkpointer.py,sha256=cEds3DDjJmF4Bpye_3t4UInyAhhVIiCtfMr539GBNOQ,5455
+-orbax/checkpoint/_src/futures/BUILD,sha256=GLmDb7pWKsogCBaF8sI3qfUvddTFWMztnRG7MCi-tC4,480
+ orbax/checkpoint/_src/futures/future.py,sha256=lYeM7amx8yn1o0jyWJvXAJlCOKM_n_c1_0WBhsrb7jE,12485
+ orbax/checkpoint/_src/futures/synchronization.py,sha256=HCnywTZu00o1c3g3vwcelIk8qhvWjNgl6QeenKrjFRo,2317
+ orbax/checkpoint/_src/futures/synchronization_test.py,sha256=MYR4gteyS7btDhYWgu_01k77MM66eMdCvqr_yowXFB4,1655
+-orbax/checkpoint/_src/handlers/BUILD,sha256=w3dOd4tEOC-88YaecYqmiDfkzdRChYiL0Ip9LsJRoew,9422
+ orbax/checkpoint/_src/handlers/array_checkpoint_handler.py,sha256=eZgGFaOiTtpe_fVpK67UpwchwSGO9qP2gG1veZ-6EAo,7199
+ orbax/checkpoint/_src/handlers/async_checkpoint_handler.py,sha256=f5MsciYTbdksAZ_Cda6jHIhdBiZbKMa1SFT9FoaVGgU,1405
+ orbax/checkpoint/_src/handlers/base_pytree_checkpoint_handler.py,sha256=yD8iQk60taMOTQDth7cP58eO1w7R2ufYptRq0cjNqZs,37976
+@@ -75,7 +68,6 @@ orbax/checkpoint/_src/handlers/random_key_checkpoint_handler.py,sha256=4DnwDyc0F
+ orbax/checkpoint/_src/handlers/random_key_checkpoint_handler_test.py,sha256=jiL3-h-qjhxr2pGHRj9PwrVdzXETlKRF4MMDYK_DfrI,6633
+ orbax/checkpoint/_src/handlers/standard_checkpoint_handler.py,sha256=feKqOHQNNC28_FuuWKiaUvcKrV2P7jYTDvwiUbrOkso,11429
+ orbax/checkpoint/_src/handlers/standard_checkpoint_handler_test_utils.py,sha256=UGajpY3GxT0EKu-rMOuLq7ULy2S8V7uAHkNq7YYzk8I,14457
+-orbax/checkpoint/_src/logging/BUILD,sha256=njcYdJvrQUUfRDFgln0qrDUFYgKddWFpuAgWeEVXnOA,999
+ orbax/checkpoint/_src/logging/abstract_logger.py,sha256=8u8xe5Cv6Xg-WmRu6KVsX7auw34s2R0xD0XUnPXf5xE,1068
+ orbax/checkpoint/_src/logging/cloud_logger.py,sha256=izydLNgRZ3MGskUusrawOrOwgShCyUyiXscdOW0-Gus,2584
+ orbax/checkpoint/_src/logging/cloud_logger_test.py,sha256=nVfPOKGdDsDuCizXo7yF5wS9z_JH7LWV51u6zQXiG3o,1379
+@@ -84,7 +76,6 @@ orbax/checkpoint/_src/logging/composite_logger_test.py,sha256=cU5VJXbeP0qPfu98MZ
+ orbax/checkpoint/_src/logging/standard_logger.py,sha256=wwJs2jwWGL6N3BY6y2DyUD3Dnc5aoHzxqhHtpXwGxdA,1214
+ orbax/checkpoint/_src/logging/standard_logger_test.py,sha256=X751pltK0Yb5oaNRBg-jc_buJeVHcbpoz-BHwXKsGsQ,1185
+ orbax/checkpoint/_src/logging/step_statistics.py,sha256=c5PxF3I7mGXxoRkeqMJeyQ_8Fk2I-BYmtEW__9e7vbg,5467
+-orbax/checkpoint/_src/metadata/BUILD,sha256=PDcUuL8ftZSWIk8k09-zVgk7nvH9X_0qvz-Y9xRSswc,4384
+ orbax/checkpoint/_src/metadata/array_metadata.py,sha256=iLNCVzdGYhr8ruEWlC21nRGtdWYk-FnixAelNpemJa4,1375
+ orbax/checkpoint/_src/metadata/array_metadata_store.py,sha256=EIRAG1oFf3MjNqDJ1ra_gx7-uLB6N_tDDNBXJE9hf_Y,17936
+ orbax/checkpoint/_src/metadata/array_metadata_store_test.py,sha256=CjrGWijG8wu1rCvh8P9YPTRI5jN7RMiFiiNpH3YrUE8,12400
+@@ -104,10 +95,8 @@ orbax/checkpoint/_src/metadata/tree_rich_types_test.py,sha256=FQblQ8V6yXBg9bKxVM
+ orbax/checkpoint/_src/metadata/tree_test.py,sha256=qsB3Wyv99RxS8IGUhm1H__MO4Dy7gOWZLCiJMlj2NKA,12467
+ orbax/checkpoint/_src/metadata/value.py,sha256=OIsGZKK0AEENjHdQOmL86jthb2R3ukrTQPwvSrtup_o,3755
+ orbax/checkpoint/_src/metadata/value_metadata_entry.py,sha256=LJtTlkhXTiTJR_EuBjbSmo90iV9oohBMFHl-ewTkoCg,2989
+-orbax/checkpoint/_src/multihost/BUILD,sha256=3JuVAaWdl_-Y1-SZLzxFNrlzpoz8YtE4yLcxOUJG0WM,219
+ orbax/checkpoint/_src/multihost/multihost.py,sha256=YmEp_QgDfTSZW5h0Bt-szO8tBL9g-vkqcbanU6Giiy8,12896
+ orbax/checkpoint/_src/multihost/multislice.py,sha256=7TbE1CoB7E97QjiS8eRhH1ImEq2kSsDc9V6sUsS3c_w,10318
+-orbax/checkpoint/_src/path/BUILD,sha256=1TV58f0eStwcRKN3JO7_EpqhEg9lUoBZcT0bT-c_zqE,3349
+ orbax/checkpoint/_src/path/__init__.py,sha256=9xDrETQE_Fq-P-NVacRNKcrVOEdoltsbm7FIRTl5lqc,649
+ orbax/checkpoint/_src/path/async_utils.py,sha256=gRYq_mxwQVSU2_Ij5QPNajYo9rTTOP49StDBHwRpVRQ,1736
+ orbax/checkpoint/_src/path/atomicity.py,sha256=EGzy2IDt_Smhn1zTL25sg-1zxt6-v5hgwoaFV5PnnEM,18549
+@@ -121,10 +110,8 @@ orbax/checkpoint/_src/path/format_utils_test.py,sha256=sZc9BxoW57XKpyApzRVX6__bh
+ orbax/checkpoint/_src/path/step.py,sha256=6caMRSPmBRsEgo3wZdX1rhGf177Kh7GU8AYylJJE1Wk,25180
+ orbax/checkpoint/_src/path/step_test.py,sha256=6MHZoZx7PMdLDEIq5r-mi45gAaE2qWmYqN5AGYAWy0E,18279
+ orbax/checkpoint/_src/path/utils.py,sha256=nkULJniV52MWQ_Y7fxg6IX3BMFSEdcCYi6OkIz7HukU,1411
+-orbax/checkpoint/_src/path/snapshot/BUILD,sha256=-BXhMEguJ_KyBKXLte1KDrpfzhtTSiuyRDmFS6MELFY,333
+ orbax/checkpoint/_src/path/snapshot/snapshot.py,sha256=EU2x6_OQB1wXB-pa6hy-Rnaisa_9DRB3G5fIcJ_3BiU,2271
+ orbax/checkpoint/_src/path/snapshot/snapshot_test.py,sha256=kxUlzTfpTPVUI_z6nTOVEex4WMEt62XJwfT_wu-iE4g,1898
+-orbax/checkpoint/_src/serialization/BUILD,sha256=8O3fsOTZHgVQnKGzmkfoo43PBIBJXHyKu8vMFVlIJR4,3246
+ orbax/checkpoint/_src/serialization/replica_slices.py,sha256=5Lv10vnIBKgjuQHGm_IVlQ63IbRrmX5WzeCoP3HQ544,16083
+ orbax/checkpoint/_src/serialization/replica_slices_test.py,sha256=-u-3x8iXV7GhSH-bfNiKpFc44pxLV1dzCIhgiV9zF7Q,5345
+ orbax/checkpoint/_src/serialization/serialization.py,sha256=98BjivlvAbjhFup-SCjY4aXieneC39bkkdxKJMSppZc,20257
+@@ -133,15 +120,12 @@ orbax/checkpoint/_src/serialization/tensorstore_utils.py,sha256=vteCkQTe8th2g17c
+ orbax/checkpoint/_src/serialization/tensorstore_utils_test.py,sha256=E-jfZ0uw-KwjCtOuQdKQB9at_hT6KQ0V6oj9K__7uWI,19695
+ orbax/checkpoint/_src/serialization/type_handlers.py,sha256=6p6N7Z2UxrEoEWc3Td8n_j8pb8BMwaGYmVTGqPBf4ok,60624
+ orbax/checkpoint/_src/serialization/types.py,sha256=0b9EhurEnRQwZJPZC025PsypADY0MBX4WLo47NQ_1nc,12448
+-orbax/checkpoint/_src/testing/BUILD,sha256=dYIMsImcWZMzKZTG_7dcDo9pfI3O_QNXDX3zTZPwJe4,311
+ orbax/checkpoint/_src/testing/test_tree_utils.py,sha256=uDlxkNxa2_ygbQfQs4sg1qAYhh2T7qPuIpFhzBEq34o,41791
+-orbax/checkpoint/_src/tree/BUILD,sha256=M5g13rIvTGX9W16CtJKKDLLAOgkKHgL3HQKYjT6PHgg,534
+ orbax/checkpoint/_src/tree/types.py,sha256=94QKfu4jo8ddkhU-8mRHW3KhhoJLc7CA6CpXFb8LvdA,1189
+ orbax/checkpoint/_src/tree/utils.py,sha256=7QuIHPl1Hpg4aDEj9rbBTBsEtdKBZ-2JkVGUTMI0fPU,9906
+ orbax/checkpoint/_src/tree/utils_test.py,sha256=Vub6jcS5D2nlHgpGYCVl7oGxjlgQdoGp-xlFJUkWNAk,8956
+ orbax/checkpoint/experimental/README.md,sha256=tic5ktV4K_mb2HryBsCy59ocRU6P0trw5Rti_J4_-yM,115
+ orbax/checkpoint/experimental/__init__.py,sha256=4Pb4JEUzytOA9FMwntBJ8un2Fmf1ARNNgHbC3tKnYqo,583
+-orbax/checkpoint/experimental/emergency/BUILD,sha256=GODPkHcFnzFDzY6FaWmRQgRtEqtd_5C7RtwYHO_RpY0,3239
+ orbax/checkpoint/experimental/emergency/__init__.py,sha256=4Pb4JEUzytOA9FMwntBJ8un2Fmf1ARNNgHbC3tKnYqo,583
+ orbax/checkpoint/experimental/emergency/checkpoint_manager.py,sha256=t8xZWOWoMELn5kRWaz5kPtmlCBnw1Fg1Pi6qsTwnNgA,48467
+ orbax/checkpoint/experimental/emergency/integration_test_utils.py,sha256=9ZA4amo8sO8oyRalGp8hT_ClzMDJpnm7tlhP03IA-VA,9238
+@@ -151,21 +135,16 @@ orbax/checkpoint/experimental/emergency/multihost.py,sha256=ksK5wnf6bHrUXCq4d5p4
+ orbax/checkpoint/experimental/emergency/replicator_checkpoint_manager.py,sha256=GwiN-FOOp0oksL0OSxkc2blyde5GQIqqRYYsh4tNp6Y,11898
+ orbax/checkpoint/experimental/emergency/test_utils.py,sha256=_57drWi1cw12RNORt9m-QX8Vz65L4igJIZaJ4yTS7ro,46137
+ orbax/checkpoint/experimental/emergency/test_scripts/test_emergency_checkpointing.py,sha256=zLjt_BBWnb0P-Y0z4jJ6GbrqRGI_6votNDhRJ_Y-lbk,11395
+-orbax/checkpoint/metadata/BUILD,sha256=t-DAZqThxsV2IYBqF7A2oYSAGTAiOBbYAwYb89koSaE,687
+ orbax/checkpoint/metadata/__init__.py,sha256=cuQTv4URIcZG73Pxr1RkGDkp16k7vxxce4kPT2nl7EU,1809
+ orbax/checkpoint/metadata/tree.py,sha256=k317jm1t23hK0zZ4vKBNJ8XA0Zv2KKO6Fn6LyQKiPc8,908
+ orbax/checkpoint/metadata/value.py,sha256=eY3GQ8pCaDCrL8GO0KX2aaNwi4htJEOWUtxfQfDFyKg,1047
+-orbax/checkpoint/multihost/BUILD,sha256=FehknDArU9-W7HGwqwT17lz3a9L_UoFO1SCNFW9Ql0g,294
+ orbax/checkpoint/multihost/__init__.py,sha256=j-hG9DloRUrX-Y2H2tRuLkWooSO9d6SOdqrfmMlJOW8,1559
+ orbax/checkpoint/multihost/multislice.py,sha256=kCUAbVLVIxilkPlXKNeo6QHviv2YtGFaCUFOkngvQQQ,723
+ orbax/checkpoint/proto/__init__.py,sha256=bdgIYbcjrXjdJPySS6o2gDD8F-ZoFPq6138AEtt9Ob0,757
+-orbax/checkpoint/proto/testing/BUILD,sha256=vPtEiq2WtntcAXpAccBhQCwBpkyXxKkSOmUNOUuqBww,217
+ orbax/checkpoint/proto/testing/__init__.py,sha256=bdgIYbcjrXjdJPySS6o2gDD8F-ZoFPq6138AEtt9Ob0,757
+ orbax/checkpoint/proto/testing/foo.proto,sha256=AW4roV9hk7VSKx2cHXX36fCatv831362PomFj0f9Jzc,136
+-orbax/checkpoint/serialization/BUILD,sha256=Y_Lv4EmRM3FaUMjL7rODfwX6gz11Beja2FTylXzs8hY,444
+ orbax/checkpoint/serialization/__init__.py,sha256=hbkwmWDj3VkjVHqP465yYn5InUVosRpvUzJmNPJGjJY,971
+ orbax/checkpoint/serialization/tensorstore_utils.py,sha256=vbqaZvRVb9CmrfDAQpZRQqGRR4nPmYRAlL-_KI_UHBQ,790
+-orbax/checkpoint/testing/BUILD,sha256=fPAqFWEEUbMbRlOsCXtjfBqN1nphpNdDTNnij581pLA,445
+ orbax/checkpoint/testing/__init__.py,sha256=CGd1WWZKizBiKu88buWxO8azSB2P7UgvBdMruT719o8,727
+ orbax/checkpoint/testing/aggregate_all.checkpoint/_METADATA,sha256=6IKBbcEIYsG9X18eoB-c0xpN67gFgWEL-HFEeIaWbCE,637
+ orbax/checkpoint/testing/aggregate_all.checkpoint/checkpoint,sha256=GOZGeUUMYeX7RMOKJmpHpuC0hgC68Sy0BzRXhVbfwys,454
