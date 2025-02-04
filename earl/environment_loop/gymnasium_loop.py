@@ -259,14 +259,13 @@ class GymnasiumLoop:
             raise ValueError("On-policy training is not supported in GymnasiumLoop.")
 
         devices = devices or jax.local_devices()
+        self._inference_device: jax.Device = devices[0]
+        self._update_device: jax.Device = devices[0]
         if len(devices) > 1:
-            self._inference_device: jax.Device = devices[0]
-            self._update_device: jax.Device = devices[1]
+            self._inference_device = devices[0]
+            self._update_device = devices[1]
             if len(devices) > 2:
                 _logger.warning("Multiple update devices are not supported yet. Using only the first device.")
-        else:
-            self._inference_device: jax.Device = devices[0]
-            self._update_device: jax.Device = devices[0]
 
     def reset_env(self) -> EnvStep:
         """Resets the environment.
