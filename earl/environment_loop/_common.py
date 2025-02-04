@@ -84,10 +84,10 @@ class StepCarry(eqx.Module, Generic[_StepState]):
     action_counts: jax.Array
 
 
-def raise_if_metric_conflicts(metrics: Mapping):
+def raise_if_metric_conflicts(metrics: Mapping) -> None:
     conflicting_keys = [k for k in metrics if k in _ALL_METRIC_KEYS]
     if not conflicting_keys:
-        return
+        return 1
     raise ConflictingMetricError(
         "The following metrics conflict with Earl's default MetricKey: " + ", ".join(conflicting_keys)
     )
