@@ -13,6 +13,8 @@ For other environments, Earl will support the [Gymnasium](https://gymnasium.fara
 
 ## Development
 
+Currently running tests with bazel is only supported on Linux x86_64.
+
 Install [Bazelisk](https://github.com/bazelbuild/bazelisk/blob/master/README.md), name it `bazel`.
 
 Then run tests with:
@@ -32,13 +34,3 @@ bazel run //:dot_venv_linux_x86_64
 ```
 
 This will create a `.venv` directory with the dependencies so you can use it with your IDE.
-
-
-
-## TODO
-
-- Add support for data parallel training use [pmean](https://astralord.github.io/posts/exploring-parallel-strategies-with-jax/#data-parallelism)
-- Add support for saving evaluation observations to a video file.
-- Add gymnasium loop:
-  - Multi-threaded to overlap model forward, data copying, and envs step. Basically steal ideas from podracers Sebulba.
-- Add builders, based on [Acme](https://github.com/google-deepmind/acme/blob/master/acme/agents/jax/builders.py).
