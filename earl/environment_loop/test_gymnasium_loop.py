@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import time
 import typing
 
@@ -209,7 +210,7 @@ class SleepEnv(gymnasium.core.Env[np.int64, np.int64]):
     return np.int64(0), 0.0, False, False, {}
 
 
-def test_inference_update_different_devices():
+def test_inference_update_different_devices(caplog):
   # This test can run on two CPU devices using
   # XLA_FLAGS="--xla_force_host_platform_device_count=2"
   # but I can't figure out how to make that flag take effect
@@ -239,5 +240,6 @@ def test_inference_update_different_devices():
   # the default agent_state has nets=None.
   # We set it to an array to check for use-after-donation bugs.
   agent_state = dataclasses.replace(agent_state, nets=jax.numpy.ones((1,)))
-  with pytest.warns(UserWarning, match="inference is much slower than update"):
-    loop.run(agent_state, num_cycles, steps_per_cycle)
+  caplog.set_level(logging.WARNING)
+  loop.run(agent_state, num_cycles, steps_per_cycle)
+  assert "inference is much slower than update" in caplog.text
