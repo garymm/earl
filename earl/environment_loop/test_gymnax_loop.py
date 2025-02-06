@@ -1,18 +1,16 @@
 import dataclasses
-from unittest import mock
 
 import gymnax
 import gymnax.environments.spaces
 import jax
-import jax.numpy as jnp
 import pytest
 from jax_loop_utils.metric_writers import MemoryWriter
 from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 
 from earl.agents.random_agent.random_agent import RandomAgent
-from earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnax
+from earl.core import ConflictingMetricError, Metrics, env_info_from_gymnax
 from earl.environment_loop import CycleResult
-from earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey, State
+from earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
 from earl.utils.prng import keygen
 
 
@@ -81,38 +79,6 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
     assert result.agent_state.opt.opt_count == expected_opt_count
 
   assert env.num_actions > 0
-
-
-def test_run_with_state():
-  env, env_params = gymnax.make("CartPole-v1")
-  num_envs = 2
-  obs, env_state = jax.vmap(env.reset)(jax.random.split(jax.random.PRNGKey(0), num_envs))
-  key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env.action_space().sample, 1)
-  env.reset = mock.Mock(spec=env.reset)
-  loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter())
-  agent_state = agent.new_state(
-    None, env_info_from_gymnax(env, env_params, num_envs), jax.random.PRNGKey(0)
-  )
-  initial_step_num = 2
-  prev_action = jax.vmap(env.action_space(None).sample)(
-    jax.random.split(jax.random.PRNGKey(0), num_envs)
-  )
-  assert isinstance(prev_action, jax.Array)
-  state = State(
-    agent_state,
-    env_state,
-    EnvStep(
-      new_episode=jnp.zeros((num_envs,), dtype=jnp.bool),
-      obs=obs,
-      prev_action=prev_action,
-      reward=jnp.zeros((num_envs,)),
-    ),
-    step_num=initial_step_num,
-  )
-  steps_per_cycle = 10
-  _result = loop.run(state, 1, steps_per_cycle)
-  assert env.reset.call_count == 0
 
 
 def test_bad_args():

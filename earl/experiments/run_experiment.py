@@ -156,9 +156,18 @@ def _new_gymnasium_loop(
   observe_cycle: ObserveCycle = no_op_observe_cycle,
   inference: bool = False,
   assert_no_recompile: bool = True,
+  devices: list[jax.Device] | None = None,
 ) -> GymnasiumLoop:
   return GymnasiumLoop(
-    env, agent, num_envs, key, metric_writer, observe_cycle, inference, assert_no_recompile
+    env,
+    agent,
+    num_envs,
+    key,
+    metric_writer,
+    observe_cycle,
+    inference=inference,
+    assert_no_recompile=assert_no_recompile,
+    devices=devices,
   )
 
 
@@ -212,10 +221,13 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     train_key,
     metric_writer=train_metric_writer,
     observe_cycle=train_observe_cycle,
+    devices=config.jax_devices(),
   )
 
   train_agent_state = agent.new_state(networks, env_info, train_key)
   del networks
+
+  train_agent_state = train_loop.replicate(train_agent_state)
 
   train_loop_state = LoopState(train_agent_state)
   del train_agent_state

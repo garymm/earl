@@ -95,6 +95,11 @@ class EnvConfig(draccus.choice_types.ChoiceRegistry):
   pass
 
 
+class AutoDeviceSelector(enum.StrEnum):
+  ALL = enum.auto()
+  """Use all of jax.local_devices()"""
+
+
 @dataclass
 class ExperimentConfig(abc.ABC):
   """Configures an experiment.
@@ -119,16 +124,55 @@ class ExperimentConfig(abc.ABC):
   def new_metric_writers(self) -> MetricWriters:
     return MetricWriters()
 
+  def jax_devices(self) -> list[jax.Device]:
+    local_devices = jax.local_devices()
+    if isinstance(self.devices, int):
+      return local_devices[self.devices : self.devices + 1]
+    elif isinstance(self.devices, list):
+      return [local_devices[i] for i in self.devices]
+    else:
+      assert self.devices == AutoDeviceSelector.ALL
+      return local_devices
+
   num_eval_cycles: int
+  """Number of cycles to evaluate the agent for. AgentState.inference will be set to
+  True, and no optimization will be performed. Must divide num_train_cycles."""
+
   num_train_cycles: int
+  """Number of cycles to train the agent for. Must be divisible by num_eval_cycles."""
+
   num_envs: int
+  """Number of environments to run in parallel."""
+
   random_seed: int
+  """Random seed to use for the experiment."""
+
   steps_per_cycle: int
-  # This type annotation is just to activate the
-  # choice type functionality in draccus, but nothing actually
-  # enforces that the env field is a subclass of EnvConfig.
+  """Number of steps to run in each cycle."""
+
   env: EnvConfig
+  """Environment parameters."""
+
   checkpoint: CheckpointConfig | None = None
+  """If not None, the experiment will save and / or restore checkpoints.
+  NOTE: if restore_from_checkpoint_num is not None, any configuration that was stored
+  will override the configuration in this ExperimentConfig.
+  The step number passed to CheckpointManager.save() is a number of environment steps
+  during training cycles. It is only called after an eval cycle.
+  Example: if steps_per_cycle=3, num_train_cycles=10 and num_eval_cycles=2, save(5*3) and
+  save(10*3) will be called.
+  If num_eval_cycles is 0, CheckpointManager.save(num_train_cycles*steps_per_cycle) will be
+  called after training."""
+
+  devices: int | list[int] | AutoDeviceSelector = 0
+  """Which devices to use for data parallel training.
+
+  int means the first <n> local devices.
+
+  list[int] means the local devices with the given indices.
+
+  "all" means all of jax.local_devices().
+  """
 
   # explititly define this so we can change the type of env and
   # avoid every subclass of ExperimentConfig having to supress type
@@ -144,6 +188,7 @@ class ExperimentConfig(abc.ABC):
     # env is not required to be a subclass of EnvConfig.
     env: typing.Any,
     checkpoint: CheckpointConfig | None = None,
+    devices: int | list[int] | AutoDeviceSelector = 0,
   ) -> None:
     self.num_eval_cycles = num_eval_cycles
     self.num_train_cycles = num_train_cycles
@@ -152,7 +197,7 @@ class ExperimentConfig(abc.ABC):
     self.steps_per_cycle = steps_per_cycle
     self.env = typing.cast(EnvConfig, env)
     self.checkpoint = checkpoint
-
+    self.devices = devices
     super().__init__()
     self.__post_init__()
 
@@ -166,24 +211,3 @@ class ExperimentConfig(abc.ABC):
         f"num_train_cycles must be divisible by num_eval_cycles. Got {self.num_train_cycles} and "
         f"{self.num_eval_cycles}"
       )
-
-
-ExperimentConfig.__init__.__doc__ = """
-Args:
-    env: Environment parameters.
-    num_eval_cycles: Number of cycles to evaluate the agent for. AgentState.inference will be set to
-      True, and no optimization will be performed. Must divide num_train_cycles.
-    num_train_cycles: Number of cycles to train the agent for. Must be divisible by num_eval_cycles.
-    num_envs: Number of environments to run in parallel.
-    random_seed: Random seed to use for the experiment.
-    steps_per_cycle: Number of steps to run in each cycle.
-    checkpoint: If not None, the experiment will save and / or restore checkpoints.
-      NOTE: if restore_from_checkpoint_num is not None, any configuration that was stored
-      will override the configuration in this ExperimentConfig.
-      The step number passed to CheckpointManager.save() is a number of environment steps
-      during training cycles. It is only called after an eval cycle.
-      Example: if steps_per_cycle=3, num_train_cycles=10 and num_eval_cycles=2, save(5*3) and
-      save(10*3) will be called.
-      If num_eval_cycles is 0, CheckpointManager.save(num_train_cycles*steps_per_cycle) will be
-      called after training.
-"""

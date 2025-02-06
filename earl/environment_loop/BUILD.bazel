@@ -121,6 +121,24 @@ py_test(
         "//earl/utils:prng",
         "@pypi//gymnax",
         "@pypi//jax",
+        "@pypi//jax_loop_utils",
         "@pypi//pytest",
+    ],
+)
+
+py_test(
+    name = "test_gymnax_loop_multi_device",
+    timeout = "moderate",
+    srcs = ["test_gymnax_loop_multi_device.py"],
+    env = {
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=2",
+    },
+    deps = [
+        ":gymnax_loop",
+        "//earl/agents/random_agent",
+        "//earl/utils:prng",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jax_loop_utils",
     ],
 )

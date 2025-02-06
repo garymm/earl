@@ -116,7 +116,7 @@ class _InferenceThread(threading.Thread):
     copy_back_to_device: jax.Device,
     fake_thread: bool = False,
   ):
-    """Initializes the _RunInferenceThread.
+    """Initializes the _InferenceThread.
 
     Args:
         target: The target function to run.
@@ -238,7 +238,8 @@ class GymnasiumLoop:
 
     if vectorization_mode == "sync":
       self._env = SyncVectorEnv([_env_factory for _ in range(num_envs)])
-    elif vectorization_mode == "async":
+    else:
+      assert vectorization_mode == "async"
       # context="spawn" because others are unsafe with multithreaded JAX
       with _jax_platform_cpu():
         self._env = AsyncVectorEnv([_env_factory for _ in range(num_envs)], context="spawn")
@@ -262,7 +263,7 @@ class GymnasiumLoop:
     if not self._inference_only and not self._agent.num_off_policy_optims_per_cycle():
       raise ValueError("On-policy training is not supported in GymnasiumLoop.")
 
-    devices = devices or jax.local_devices()
+    devices = devices or jax.local_devices()[0:1]
     self._inference_device: jax.Device = devices[0]
     self._update_device: jax.Device = devices[0]
     if len(devices) > 1:
@@ -388,7 +389,7 @@ class GymnasiumLoop:
             inference_result, agent_state=agent_state, metrics=metrics
           )
         update_duration = time.monotonic() - cycle_start - inference_wait_duration
-        if cycle_num == 1 and inference_wait_duration > 10 * update_duration:
+        if cycle_num == 1 and inference_wait_duration > 5 * update_duration:
           _logger.warning(
             "inference is much slower than update. inference duration: %fs, update duration: %fs",
             inference_wait_duration,
@@ -407,7 +408,7 @@ class GymnasiumLoop:
       if cycle_num == 0:
         raise_if_metric_conflicts(observe_cycle_metrics)
 
-      metrics_by_type = extract_metrics(cycle_result, observe_cycle_metrics)
+      metrics_by_type = extract_metrics(cycle_result.metrics, observe_cycle_metrics)
       metrics_by_type.scalar[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
       metrics_by_type.scalar[MetricKey.INFERENCE_WAIT_DURATION_SEC] = inference_wait_duration
       metrics_by_type.scalar[MetricKey.UPDATE_DURATION_SEC] = update_duration
@@ -573,3 +574,10 @@ class GymnasiumLoop:
 
   def close(self):
     self._env.close()
+
+  def replicate(self, agent_state: AgentState) -> AgentState:
+    """Replicates the agent state for distributed training.
+
+    This is a no-op because GymnasiumLoop does not support data parallel training.
+    """
+    return agent_state
