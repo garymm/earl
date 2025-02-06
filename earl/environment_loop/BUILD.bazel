@@ -71,6 +71,26 @@ py_test(
     ],
 )
 
+py_test(
+    name = "test_gymnasium_loop_multi_device",
+    timeout = "moderate",
+    srcs = ["test_gymnasium_loop_multi_device.py"],
+    env = {
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=2",
+    },
+    deps = [
+        ":gymnasium_loop",
+        "//earl:core",
+        "//earl:metric_key",
+        "//earl/agents/random_agent",
+        "//earl/utils:prng",
+        "@pypi//gymnasium",
+        "@pypi//jax",
+        "@pypi//numpy",
+        "@pypi//pytest",
+    ],
+)
+
 py_library(
     name = "gymnax_loop",
     srcs = ["gymnax_loop.py"],
