@@ -5,3 +5,6 @@ test --test_output=errors
 # when triggering builds using different shells on the same machine.
 # https://stackoverflow.com/questions/74881594/bazel-builds-from-scratch-ignoring-cache
 build --incompatible_strict_action_env
+
+# https://github.com/bazelbuild/rules_python/issues/1653
+build --legacy_external_runfiles=false
