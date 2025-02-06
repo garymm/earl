@@ -14,6 +14,9 @@ build --remote_cache=grpcs://remote.buildbuddy.io
 build --remote_timeout=3600
 build --remote_cache_compression
 build --legacy_important_outputs=false
+# https://github.com/bazelbuild/rules_python/issues/1653
+build --legacy_external_runfiles=false
+
 
 common --repository_cache=/home/runner/.cache/bazel_repository_cache
 
