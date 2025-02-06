@@ -72,6 +72,8 @@ class GymnaxLoop:
     not the interaction with the environment.
   """
 
+  _PMAP_AXIS_NAME = "device"
+
   def __init__(
     self,
     env: GymnaxEnvironment,
@@ -83,6 +85,7 @@ class GymnaxLoop:
     observe_cycle: ObserveCycle = no_op_observe_cycle,
     inference: bool = False,
     assert_no_recompile: bool = True,
+    devices: typing.Sequence[jax.Device] | None = None,
   ):
     """Initializes the GymnaxLoop.
 
@@ -98,13 +101,15 @@ class GymnaxLoop:
             and a trajectory of length steps_per_cycle and runs any custom logic on it.
         inference: If False, agent.update_for_cycle() will not be called.
         assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
+        devices: sequence of devices for data parallelism.
+            Each device will run num_envs, and the gradients will be averaged across devices.
+            If not set, runs on jax.local_devices()[0].
 
     """
     self._env = env
     sample_key, key = jax.random.split(key)
-    sample_key = jax.random.split(sample_key, num_envs)
     self._action_space = self._env.action_space(env_params)
-    self._example_action = jax.vmap(self._action_space.sample)(sample_key)
+    self._example_action = self._action_space.sample(sample_key)
     self._env_reset = partial(self._env.reset, params=env_params)
     self._env_step = partial(self._env.step, params=env_params)
     self._agent = agent
@@ -113,10 +118,17 @@ class GymnaxLoop:
     self._metric_writer = metric_writer
     self._observe_cycle = observe_cycle
     self._inference = inference
+    self._devices = devices or jax.local_devices()[0:1]
     _run_cycle_and_update = self._run_cycle_and_update
+    # max_traces=2 because of https://github.com/patrick-kidger/equinox/issues/932
     if assert_no_recompile:
-      _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=1)
-    self._run_cycle_and_update = eqx.filter_jit(_run_cycle_and_update, donate="warn")
+      _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=2)
+      self._run_cycle_and_update = eqx.filter_pmap(
+        _run_cycle_and_update,
+        donate="warn",
+        axis_name=self._PMAP_AXIS_NAME,
+        devices=self._devices,  # pyright: ignore[reportCallIssue]
+      )
 
   def reset_env(self) -> tuple[EnvState, EnvStep]:
     """Resets the environment.
@@ -125,14 +137,19 @@ class GymnaxLoop:
     Exposed so that callers can get the env_state and env_step to restore from a checkpoint.
     """
     env_key, self._key = jax.random.split(self._key, 2)
-    env_keys = jax.random.split(env_key, self._num_envs)
-    obs, env_state = jax.vmap(self._env_reset)(env_keys)
+    num_devices = len(self._devices)
+    env_keys = jax.random.split(env_key, (num_devices, self._num_envs))
+    obs, env_state = jax.pmap(
+      jax.vmap(self._env_reset), axis_name=self._PMAP_AXIS_NAME, devices=self._devices
+    )(env_keys)
 
     env_step = EnvStep(
-      new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
+      new_episode=jnp.ones((num_devices, self._num_envs), dtype=jnp.bool),
       obs=obs,
-      prev_action=jnp.zeros_like(self._example_action),
-      reward=jnp.zeros((self._num_envs,)),
+      prev_action=jnp.zeros(
+        (num_devices, self._num_envs) + self._example_action.shape, dtype=self._example_action.dtype
+      ),
+      reward=jnp.zeros((num_devices, self._num_envs)),
     )
     return env_state, env_step
 
@@ -176,6 +193,7 @@ class GymnaxLoop:
       state = State(state)
 
     agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference)
+    agent_state = self.replicate(agent_state)
 
     if state.env_state is None:
       assert state.env_step is None
@@ -187,6 +205,8 @@ class GymnaxLoop:
 
     step_num_metric_start = state.step_num
     del state
+
+    key = jax.random.split(self._key, len(self._devices))
 
     cycles_iter = range(num_cycles)
     if print_progress:
@@ -205,28 +225,32 @@ class GymnaxLoop:
         jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_state),
       )
       cycle_result = self._run_cycle_and_update(
-        agent_state, env_state, env_step, self._key, steps_per_cycle
+        agent_state, env_state, env_step, key, steps_per_cycle
       )
 
-      observe_cycle_metrics = self._observe_cycle(cycle_result)
-      # Could potentially be very slow if there are lots
-      # of metrics to compare
-      raise_if_metric_conflicts(observe_cycle_metrics)
+      cycle_result_device_0 = jax.tree.map(
+        lambda x: x[0] if isinstance(x, jax.Array) else x, cycle_result
+      )
+      observe_cycle_metrics = self._observe_cycle(cycle_result_device_0)
+      if cycle_num == 0:  # Could be slow if lots of metrics, so just cycle 0
+        raise_if_metric_conflicts(observe_cycle_metrics)
 
-      agent_state, env_state, env_step, self._key = (
+      agent_state, env_state, env_step, key = (
         cycle_result.agent_state,
         cycle_result.env_state,
         cycle_result.env_step,
         cycle_result.key,
       )
 
-      metrics_by_type = extract_metrics(cycle_result, observe_cycle_metrics)
+      metrics_by_type = extract_metrics(cycle_result.metrics, observe_cycle_metrics)
       metrics_by_type.scalar[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
 
       step_num = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
       self._metric_writer.write_scalars(step_num, metrics_by_type.scalar)
       self._metric_writer.write_images(step_num, metrics_by_type.image)
       self._metric_writer.write_videos(step_num, metrics_by_type.video)
+
+    self._key = key[0]
 
     return Result(
       agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle
@@ -236,12 +260,13 @@ class GymnaxLoop:
     self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
   ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
-    grad, metrics = _loss_for_cycle_grad(
+    nets_grad, metrics = _loss_for_cycle_grad(
       nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
     )
-    grad_means = pytree_leaf_means(grad, "grad_mean")
+    nets_grad = jax.lax.pmean(nets_grad, axis_name=self._PMAP_AXIS_NAME)
+    grad_means = pytree_leaf_means(nets_grad, "grad_mean")
     metrics.update(grad_means)
-    agent_state = self._agent.optimize_from_grads(agent_state, grad)
+    agent_state = self._agent.optimize_from_grads(agent_state, nets_grad)
     return agent_state, metrics
 
   def _run_cycle_and_update(
@@ -294,6 +319,7 @@ class GymnaxLoop:
         steps_per_cycle,
         key,
       )
+      nets_grad = jax.lax.pmean(nets_grad, axis_name=self._PMAP_AXIS_NAME)
       grad_means = pytree_leaf_means(nets_grad, "grad_mean")
       cycle_result.metrics.update(grad_means)
       agent_state = self._agent.optimize_from_grads(cycle_result.agent_state, nets_grad)
@@ -450,3 +476,15 @@ class GymnaxLoop:
   def close(self):
     """Currently just for consistency with GymnasiumLoop."""
     pass
+
+  def replicate(self, agent_state: AgentState) -> AgentState:
+    """Replicates the agent state for data parallel training."""
+    # Don't require the caller to replicate the agent state.
+    agent_state_leaves = jax.tree.leaves(agent_state, is_leaf=eqx.is_array)
+    assert agent_state_leaves
+    assert isinstance(agent_state_leaves[0], jax.Array)
+    if isinstance(agent_state_leaves[0].sharding, jax.sharding.SingleDeviceSharding):
+      agent_state_arrays, agent_state_static = eqx.partition(agent_state, eqx.is_array)
+      agent_state_arrays = jax.device_put_replicated(agent_state_arrays, self._devices)
+      agent_state = eqx.combine(agent_state_arrays, agent_state_static)
+    return agent_state

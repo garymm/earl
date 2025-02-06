@@ -348,10 +348,19 @@ def test_run_experiment_closes_loops():
     observe_cycle,
     inference: bool = False,
     assert_no_recompile: bool = True,
+    devices: list[jax.Device] | None = None,
   ):
     nonlocal train_loop, eval_loop
     loop = MockGymnasiumLoop(
-      env, agent, num_envs, key, metric_writer, observe_cycle, inference, assert_no_recompile
+      env,
+      agent,
+      num_envs,
+      key,
+      metric_writer,
+      observe_cycle,
+      inference,
+      assert_no_recompile,
+      devices=devices,
     )
     if inference:
       eval_loop = loop
