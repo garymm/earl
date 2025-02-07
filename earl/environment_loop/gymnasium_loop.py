@@ -225,11 +225,8 @@ class GymnasiumLoop:
         vectorization_mode: Whether to create a synchronous or asynchronous vectorized environment
             from the provided Gymnasium environment.
         devices: The devices to use for the environment and agent.
-            If None, will use jax.local_devices().
-            If there is more more than one device, will use devices[0] for agent <-> environment
-            communication (i.e. inference, AKA "actor" in podracers parlance)
-            and devices[1] for agent updates (i.e. optimization, AKA "learner" in podracers terms).
-            TODO: support multiple update devices.
+            First device used for inference, others for updates.
+            If None, will use jax.local_devices()[0] for both inference and updates.
     """
     env = Autoreset(env)  # run() assumes autoreset.
 
@@ -258,21 +255,20 @@ class GymnasiumLoop:
     update = self._update
     if assert_no_recompile:
       update = eqx.debug.assert_max_traces(update, max_traces=1)
-    self._update = eqx.filter_jit(update, donate="warn")
+    # Device setup
+    devices = devices or jax.local_devices()
+    self._inference_device = devices[0]
+    self._update_devices = devices[1:] if len(devices) > 1 else [devices[0]]
+
+    # Configure update function
+    update_fn = self._update_impl
+    if len(self._update_devices) > 1:
+      update_fn = eqx.filter_pmap(update_fn, axis_name="update", devices=self._update_devices)
+      _logger.info(f"Using {len(self._update_devices)} update devices")
+    self._update = eqx.filter_jit(update_fn, donate="all-except-first")
 
     if not self._inference_only and not self._agent.num_off_policy_optims_per_cycle():
       raise ValueError("On-policy training is not supported in GymnasiumLoop.")
-
-    devices = devices or jax.local_devices()[0:1]
-    self._inference_device: jax.Device = devices[0]
-    self._update_device: jax.Device = devices[0]
-    if len(devices) > 1:
-      self._inference_device = devices[0]
-      self._update_device = devices[1]
-      if len(devices) > 2:
-        _logger.warning(
-          "Multiple update devices are not supported yet. Using only the first device."
-        )
 
   def reset_env(self) -> EnvStep:
     """Resets the environment.
@@ -327,9 +323,9 @@ class GymnasiumLoop:
 
     agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference_only)
     # everything needs to start on the update device
-    agent_state = _filter_device_put(agent_state, self._update_device)
-    env_step = _filter_device_put(self.reset_env(), self._update_device)
-    self._key = jax.device_put(self._key, self._update_device)
+    agent_state = _filter_device_put(agent_state, self._inference_device)
+    env_step = _filter_device_put(self.reset_env(), self._inference_device)
+    self._key = jax.device_put(self._key, self._inference_device)
 
     step_num_metric_start = state.step_num
     del state
@@ -339,52 +335,46 @@ class GymnasiumLoop:
       cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
 
     env_state = typing.cast(EnvState, None)
-    if self._inference_device != self._update_device:
-      inference_thread = _InferenceThread(
-        self._inference_cycle,
-        # avoid copying the unnecessary state to the inference device
-        dataclasses.replace(agent_state, experience=None, opt=None),
-        env_step,
-        steps_per_cycle,
-        self._key,
-        self._inference_device,
-        self._update_device,
-      )
-      inference_thread.start()
-    else:
-      inference_thread = None
+    inference_thread = _InferenceThread(
+      self._inference_cycle,
+      # avoid copying the unnecessary state to the inference device
+      dataclasses.replace(agent_state, experience=None, opt=None),
+      env_step,
+      steps_per_cycle,
+      self._key,
+      self._inference_device,
+      self._inference_device,
+    )
+    inference_thread.start()
     inference_wait_duration = 0
     for cycle_num in cycles_iter:
       cycle_start = time.monotonic()
       agent_state_for_inference = dataclasses.replace(agent_state, experience=None, opt=None)
-      if inference_thread:
-        inference_result = inference_thread.join_and_return()
-        inference_wait_duration = time.monotonic() - cycle_start
-        if cycle_num < num_cycles - 1:
-          inference_thread = _InferenceThread(
-            self._inference_cycle,
-            agent_state_for_inference,
-            env_step,
-            steps_per_cycle,
-            self._key,
-            self._inference_device,
-            self._update_device,
-          )
-          inference_thread.start()
-      else:
-        inference_result = self._inference_cycle(
-          agent_state_for_inference, env_step, steps_per_cycle, self._key
+      inference_result = inference_thread.join_and_return()
+      inference_wait_duration = time.monotonic() - cycle_start
+      if cycle_num < num_cycles - 1:
+        inference_thread = _InferenceThread(
+          self._inference_cycle,
+          agent_state_for_inference,
+          env_step,
+          steps_per_cycle,
+          self._key,
+          self._inference_device,
+          self._inference_device,
         )
+        inference_thread.start()
       agent_state = dataclasses.replace(agent_state, step=inference_result.agent_state.step)
       cycle_result = dataclasses.replace(inference_result, agent_state=agent_state)
 
       if self._inference_only:
         update_duration = 0
       else:
-        with jax.default_device(self._update_device):
+        with jax.default_device(self._inference_device):
           experience_state = self._agent.update_experience(agent_state, inference_result.trajectory)
           agent_state = dataclasses.replace(agent_state, experience=experience_state)
-          agent_state, metrics = self._update(agent_state, inference_result.metrics)
+          agent_state, metrics = self._update(
+            agent_state, inference_result.metrics, experience_state
+          )
           cycle_result = dataclasses.replace(
             inference_result, agent_state=agent_state, metrics=metrics
           )
@@ -422,33 +412,41 @@ class GymnasiumLoop:
       agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle
     )
 
+  def _update_impl(
+    self,
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    metrics: ArrayMetrics,
+    experience: PyTree,
+  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
+    def per_device_update(state, _):
+      new_state, metrics = self._off_policy_update(state, experience)
+      return new_state, metrics
+
+    agent_state, off_policy_metrics = filter_scan(
+      per_device_update,
+      init=agent_state,
+      xs=None,
+      length=self._agent.num_off_policy_optims_per_cycle(),
+    )
+
+    # Average metrics across devices
+    metrics.update(jax.tree_map(lambda x: jax.lax.pmean(x, axis_name="update"), off_policy_metrics))
+    return agent_state, metrics
+
   def _off_policy_update(
-    self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
+    self,
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    experience: PyTree,
   ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
     grad, metrics = _loss_for_cycle_grad(
       nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
     )
+    # Average gradients across devices
+    grad = jax.lax.pmean(grad, axis_name="update")
     grad_means = pytree_leaf_means(grad, "grad_mean")
     metrics.update(grad_means)
     agent_state = self._agent.optimize_from_grads(agent_state, grad)
-    return agent_state, metrics
-
-  def _update(
-    self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
-    metrics: ArrayMetrics,
-  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
-    agent_state, off_policy_metrics = filter_scan(
-      self._off_policy_update,
-      init=agent_state,
-      xs=None,
-      length=self._agent.num_off_policy_optims_per_cycle(),
-    )
-    # Take mean of each metric.
-    # This is potentially misleading, but not sure what else to do.
-    metrics.update({k: jnp.mean(v) for k, v in off_policy_metrics.items()})
-
     return agent_state, metrics
 
   def _inference_cycle(
@@ -576,8 +574,10 @@ class GymnasiumLoop:
     self._env.close()
 
   def replicate(self, agent_state: AgentState) -> AgentState:
-    """Replicates the agent state for distributed training.
-
-    This is a no-op because GymnasiumLoop does not support data parallel training.
-    """
-    return agent_state
+    """Replicate agent state across update devices."""
+    agent_state_arrays, agent_state_static = eqx.partition(agent_state, eqx.is_array)
+    if isinstance(agent_state_arrays, jax.Array) and agent_state_arrays.ndim == 0:
+      # Handle scalar values
+      return agent_state
+    replicated_arrays = jax.device_put_replicated(agent_state_arrays, self._update_devices)
+    return eqx.combine(replicated_arrays, agent_state_static)
