@@ -57,32 +57,23 @@ class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _St
   """
 
   step: _StepState
+  """Contains anything that needs to be updated on each step (other than replay buffers).
+  Typically random keys and RNN states go here."""
   nets: _Networks
+  """neural networks. It must be a PyTree since it will
+  be passed to equinox.combine(). It is updated in update_from_grads() based on gradients.
+  Anything that needs to be optimized via gradient descent should be in nets.
+  Any objects that need to change their behavior in inference or training mode should
+  have a boolean member variable that is named "inference" for that purpose
+  (all equinox.nn built-in modules have this)."""
   opt: _OptState
+  """contains anything other than nets that also needs to be updated when optimizing
+  (i.e. in optimize_from_grads()). This is where optimizer state belongs.
+  Set to optax.OptState if you only have one optimizer, or you can set it to a custom class."""
   experience: _ExperienceState
+  """experience replay buffer state."""
   inference: bool = False
-
-
-AgentState.__init__.__doc__ = """Args:
-
-step: contains anything that needs to be updated on each step (other than replay buffers).
-    Typically random keys and RNN states go here.
-
-nets: neural networks. It must be a PyTree since it will
-    be passed to equinox.combine(). It is updated in update_from_grads() based on gradients.
-    Anything that needs to be optimized via gradient descent should be in nets.
-    Any objects that need to change their behavior in inference or training mode should
-    have a boolean member variable that is named "inference" for that purpose
-    (all equinox.nn built-in modules have this).
-
-opt: contains anything other than nets that also needs to be updated when optimizing
-    (i.e. in optimize_from_grads()). This is where optimizer state belongs.
-    Set to optax.OptState if you only have one optimizer, or you can set it to a custom class.
-
-experience: experience replay buffer state.
-
-inference: True means inference mode, False means training.
-"""
+  """True means inference mode, False means training."""
 
 
 class AgentStep(NamedTuple, Generic[_StepState]):
@@ -99,14 +90,14 @@ class EnvStep(eqx.Module):
   all of the members will have an additional leading batch dimension.
   """
 
-  """whether this is the first timestep in an episode.
-
-    Because our environments automatically reset, this is true in 2 cases:
-    1. The first timestep in an experiment (after an explicit env.reset()).
-    2. The last timestep of an episode (since the the environment automatically
-       resets and the observation is the first of the next episode).
-    """
   new_episode: jax.Array
+  """Whether this is the first timestep in an episode.
+
+  Because our environments automatically reset, this is true in 2 cases:
+  1. The first timestep in an experiment (after an explicit env.reset()).
+  2. The last timestep of an episode (since the the environment automatically
+     resets and the observation is the first of the next episode).
+  """
   obs: PyTree
   prev_action: jax.Array  # the action taken in the previous timestep
   reward: jax.Array
@@ -276,7 +267,6 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
           nets_to_grad, nets_no_grad = a.partition_for_grad(state.nets)
           grad = jax.grad(compute_loss)(nets_to_grad, nets_no_grad, state)
           state = a.optimize_from_grads(state, grad)
-
   """
 
   def new_state(
@@ -289,7 +279,6 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
         key: a PRNG key. Used to generate keys for hidden, opt, and experience.
             Donated, so callers should not access it after calling.
         inference: if True, initialize the state for inference (opt and experience are None).
-
     """
 
     # helper funcion to wrap with jit.
@@ -328,7 +317,6 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
         nets: the agent's neural networks.
         env_info: info about the environment.
         key: a PRNG key.
-
     """
     return eqx.filter_jit(self._new_step_state)(nets, env_info, key)
 
@@ -348,7 +336,6 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
         nets: the agent's neural networks.
         env_info: info about the environment.
         key: a PRNG key.
-
     """
     return eqx.filter_jit(self._new_experience_state)(nets, env_info, key)
 
@@ -370,7 +357,6 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
         nets: the agent's neural networks.
         env_info: info about the environment.
         key: a PRNG key.
-
     """
     return eqx.filter_jit(self._new_opt_state)(nets, env_info, key)
 
@@ -397,8 +383,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
           inside this method.
 
     Returns:
-        AgentStep which contains the batch of actions and the updated hidden state.
-
+        AgentStep which contains the batch of actions and the updated step state.
     """
     # swap order of args so we can avoid donating env_step
     return _step_jit(env_step, state, self._step)
@@ -417,7 +402,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
   ) -> _ExperienceState:
     """Observes a trajectory of environment timesteps and updates the experience state.
 
-    Sub-classes should override _observe_cycle. This method is a wrapper that adds jit-compilation.
+    Sub-classes should override _update_experience. This method is a wrapper that adds
+      jit-compilation.
 
     Args:
         state: The current agent state. State.experience is donated, so callers should not access it
@@ -427,7 +413,6 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
     Returns:
         The updated experience.
-
     """
     exp = state.experience
     agent_state_no_exp = replace(state, experience=None)
@@ -500,7 +485,6 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
         state: The current agent state. Donated, so callers should not access it after calling.
         nets_grads is the gradient of the loss w.r.t. the agent's networks. Donated,
             so callers should not access it after calling.
-
     """
     return _optimize_from_grads_jit(state, nets_grads, self._optimize_from_grads)
 
