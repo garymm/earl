@@ -120,8 +120,10 @@ class _InferenceThread(threading.Thread):
 
     Args:
         target: The target function to run.
-        args: The arguments to pass to the target function.
-        kwargs: The keyword arguments to pass to the target function.
+        agent_state: The agent state to run the target function on.
+        env_step: The environment step to run the target function on.
+        num_steps: The number of steps to run the target function on.
+        key: The PRNG key to run the target function on.
         run_on_device: The device to run the target function on.
         copy_back_to_device: The device to copy the result back to.
         fake_thread: Whether to fake the thread.
@@ -225,11 +227,8 @@ class GymnasiumLoop:
         vectorization_mode: Whether to create a synchronous or asynchronous vectorized environment
             from the provided Gymnasium environment.
         devices: The devices to use for the environment and agent.
-            If None, will use jax.local_devices().
-            If there is more more than one device, will use devices[0] for agent <-> environment
-            communication (i.e. inference, AKA "actor" in podracers parlance)
-            and devices[1] for agent updates (i.e. optimization, AKA "learner" in podracers terms).
-            TODO: support multiple update devices.
+            First device used for inference, second for updates.
+            If None, will use jax.local_devices()[0] for both inference and updates.
     """
     env = Autoreset(env)  # run() assumes autoreset.
 
