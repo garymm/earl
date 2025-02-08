@@ -51,3 +51,6 @@ worse for perf though because it would synchronize all the learners and actors o
 
 - R2D2
 - IMPALA
+
+ TODO:
+ try getting rid of actor learner split and just implement double buffering during acting
