@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import typing
+from functools import partial
 
 import equinox as eqx
 import jax
@@ -23,6 +24,7 @@ from tqdm import tqdm
 from earl.core import (
   Agent,
   AgentState,
+  AgentStep,
   EnvStep,
   _ExperienceState,
   _Networks,
@@ -82,8 +84,62 @@ def _loss_for_cycle_grad(
   return loss, mutable_metrics
 
 
+def _inference_cycle_bookkeeping(
+  action_space,
+  inp: StepCarry,
+  action: jnp.ndarray,
+  done: jnp.ndarray,
+  obs: jnp.ndarray,
+  reward: jnp.ndarray,
+  agent_step: AgentStep,
+  key: jnp.ndarray,
+) -> StepCarry:
+  """Updates the StepCarry.
+
+  A separate function so it can be jitted.
+
+  jit with argument buffer donation results in a huge speedup of the overall
+  inference cycle.
+  """
+  # Update action counts for discrete action spaces
+  if isinstance(action_space, Discrete):
+    one_hot_actions = jax.nn.one_hot(action, action_space.n, dtype=inp.action_counts.dtype)
+    action_counts = inp.action_counts + jnp.sum(one_hot_actions, axis=0)
+  else:
+    action_counts = inp.action_counts
+
+  next_timestep = EnvStep(done, obs, action, reward)
+  episode_steps = inp.episode_steps + 1
+
+  # Update episode statistics
+  completed_episodes = next_timestep.new_episode
+  episode_length_sum = inp.complete_episode_length_sum + jnp.sum(episode_steps * completed_episodes)
+  episode_count = inp.complete_episode_count + jnp.sum(completed_episodes, dtype=jnp.uint32)
+
+  # Reset steps for completed episodes
+  episode_steps = jnp.where(completed_episodes, jnp.zeros_like(episode_steps), episode_steps)
+
+  total_reward = inp.total_reward + jnp.sum(next_timestep.reward)
+  total_dones = inp.total_dones + jnp.sum(next_timestep.new_episode, dtype=jnp.uint32)
+
+  return StepCarry(
+    env_step=next_timestep,
+    env_state=typing.cast(EnvState, None),
+    step_state=agent_step.state,
+    key=key,
+    total_reward=total_reward,
+    total_dones=total_dones,
+    episode_steps=episode_steps,
+    complete_episode_length_sum=episode_length_sum,
+    complete_episode_count=episode_count,
+    action_counts=action_counts,
+  )
+
+
 def _filter_device_put(x: PyTree[typing.Any], device: jax.Device | None):
   """Filtered version of `jax.device_put`.
+
+  TODO: simplify now that I don't need to copy back to the update device
 
   The equinox docs suggest filter_shard should work, but it doesn't work
   for all cases it seems.
@@ -258,6 +314,15 @@ class GymnasiumLoop:
     if assert_no_recompile:
       update = eqx.debug.assert_max_traces(update, max_traces=1)
     self._update = eqx.filter_jit(update, donate="warn")
+
+    self._inference_cycle_bookkeeping = partial(_inference_cycle_bookkeeping, self._action_space)
+    if assert_no_recompile:
+      self._inference_cycle_bookkeeping = eqx.debug.assert_max_traces(
+        self._inference_cycle_bookkeeping, max_traces=1
+      )
+    self._inference_cycle_bookkeeping = jax.jit(
+      self._inference_cycle_bookkeeping, donate_argnums=(0,)
+    )
 
     if not self._inference_only and not self._agent.num_off_policy_optims_per_cycle():
       raise ValueError("On-policy training is not supported in GymnasiumLoop.")
@@ -468,7 +533,7 @@ class GymnasiumLoop:
       env_state=typing.cast(EnvState, None),
       step_state=agent_state.step,
       key=key,
-      total_reward=jnp.array(0.0),
+      total_reward=jnp.array(0.0, dtype=jnp.float32),
       total_dones=jnp.array(0, dtype=jnp.uint32),
       episode_steps=jnp.zeros(self._num_envs, dtype=jnp.uint32),
       complete_episode_length_sum=jnp.array(0, dtype=jnp.uint32),
@@ -482,14 +547,6 @@ class GymnasiumLoop:
       agent_state_for_step = dataclasses.replace(agent_state, step=inp.step_state)
       agent_step = self._agent.step(agent_state_for_step, inp.env_step)
       action = agent_step.action
-      if isinstance(self._action_space, Discrete):
-        one_hot_actions = jax.nn.one_hot(
-          action, self._action_space.n, dtype=inp.action_counts.dtype
-        )
-        action_counts = inp.action_counts + jnp.sum(one_hot_actions, axis=0)
-      else:
-        action_counts = inp.action_counts
-
       # If action is on GPU, np.array(action) will move it to CPU.
       obs, reward, done, trunc, info = self._env.step(np.array(action))
 
@@ -499,34 +556,14 @@ class GymnasiumLoop:
       reward = jnp.array(reward)
       done = jnp.array(done | trunc)
 
-      next_timestep = EnvStep(done, obs, action, reward)
-
-      episode_steps = inp.episode_steps + 1
-
-      # Update episode statistics
-      completed_episodes = next_timestep.new_episode
-      episode_length_sum = inp.complete_episode_length_sum + jnp.sum(
-        episode_steps * completed_episodes
-      )
-      episode_count = inp.complete_episode_count + jnp.sum(completed_episodes, dtype=jnp.uint32)
-
-      # Reset steps for completed episodes
-      episode_steps = jnp.where(completed_episodes, jnp.zeros_like(episode_steps), episode_steps)
-
-      total_reward = inp.total_reward + jnp.sum(next_timestep.reward)
-      total_dones = inp.total_dones + jnp.sum(next_timestep.new_episode, dtype=jnp.uint32)
-
-      inp = StepCarry(
-        env_step=next_timestep,
-        env_state=typing.cast(EnvState, None),
-        step_state=agent_step.state,
+      inp = self._inference_cycle_bookkeeping(
+        inp=inp,
+        action=action,
+        done=done,
+        obs=obs,
+        reward=reward,
+        agent_step=agent_step,
         key=key,
-        total_reward=total_reward,
-        total_dones=total_dones,
-        episode_steps=episode_steps,
-        complete_episode_length_sum=episode_length_sum,
-        complete_episode_count=episode_count,
-        action_counts=action_counts,
       )
       trajectory.append(inp.env_step)
       step_infos.append(info)
