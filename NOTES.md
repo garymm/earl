@@ -54,3 +54,19 @@ worse for perf though because it would synchronize all the learners and actors o
 
  TODO:
  try getting rid of actor learner split and just implement double buffering during acting
+
+## Peformance
+
+### JIT + buffer donation for inference cycle bookkeeping
+
+
+With the following benchmark, this results in a 1.37 increase in
+steps / second:
+
+agent = SimplePolicyGradient
+networks = 5 hidden layers of size 200
+env = CartPole
+num_envs = 16
+inference = True
+num_cycles = 20
+steps_per_cycle = 100
