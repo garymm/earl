@@ -6,7 +6,6 @@ import os
 import threading
 import time
 import typing
-from functools import partial
 
 import equinox as eqx
 import jax
@@ -82,58 +81,6 @@ def _loss_for_cycle_grad(
   mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
   mutable_metrics[MetricKey.LOSS] = loss
   return loss, mutable_metrics
-
-
-def _inference_cycle_bookkeeping(
-  action_space,
-  inp: StepCarry,
-  action: jnp.ndarray,
-  done: jnp.ndarray,
-  obs: jnp.ndarray,
-  reward: jnp.ndarray,
-  agent_step: AgentStep,
-  key: jnp.ndarray,
-) -> StepCarry:
-  """Updates the StepCarry.
-
-  A separate function so it can be jitted.
-
-  jit with argument buffer donation results in a huge speedup of the overall
-  inference cycle.
-  """
-  # Update action counts for discrete action spaces
-  if isinstance(action_space, Discrete):
-    one_hot_actions = jax.nn.one_hot(action, action_space.n, dtype=inp.action_counts.dtype)
-    action_counts = inp.action_counts + jnp.sum(one_hot_actions, axis=0)
-  else:
-    action_counts = inp.action_counts
-
-  next_timestep = EnvStep(done, obs, action, reward)
-  episode_steps = inp.episode_steps + 1
-
-  # Update episode statistics
-  completed_episodes = next_timestep.new_episode
-  episode_length_sum = inp.complete_episode_length_sum + jnp.sum(episode_steps * completed_episodes)
-  episode_count = inp.complete_episode_count + jnp.sum(completed_episodes, dtype=jnp.uint32)
-
-  # Reset steps for completed episodes
-  episode_steps = jnp.where(completed_episodes, jnp.zeros_like(episode_steps), episode_steps)
-
-  total_reward = inp.total_reward + jnp.sum(next_timestep.reward)
-  total_dones = inp.total_dones + jnp.sum(next_timestep.new_episode, dtype=jnp.uint32)
-
-  return StepCarry(
-    env_step=next_timestep,
-    env_state=typing.cast(EnvState, None),
-    step_state=agent_step.state,
-    key=key,
-    total_reward=total_reward,
-    total_dones=total_dones,
-    episode_steps=episode_steps,
-    complete_episode_length_sum=episode_length_sum,
-    complete_episode_count=episode_count,
-    action_counts=action_counts,
-  )
 
 
 def _filter_device_put(x: PyTree[typing.Any], device: jax.Device | None):
@@ -315,13 +262,12 @@ class GymnasiumLoop:
       update = eqx.debug.assert_max_traces(update, max_traces=1)
     self._update = eqx.filter_jit(update, donate="warn")
 
-    self._inference_cycle_bookkeeping = partial(_inference_cycle_bookkeeping, self._action_space)
     if assert_no_recompile:
-      self._inference_cycle_bookkeeping = eqx.debug.assert_max_traces(
-        self._inference_cycle_bookkeeping, max_traces=1
+      self._agent_step_and_bookkeeping = eqx.debug.assert_max_traces(
+        self._agent_step_and_bookkeeping, max_traces=1
       )
-    self._inference_cycle_bookkeeping = jax.jit(
-      self._inference_cycle_bookkeeping, donate_argnums=(0,)
+    self._agent_step_and_bookkeeping = eqx.filter_jit(
+      self._agent_step_and_bookkeeping, donate="warn-except-first"
     )
 
     if not self._inference_only and not self._agent.num_off_policy_optims_per_cycle():
@@ -540,30 +486,24 @@ class GymnasiumLoop:
       complete_episode_count=jnp.array(0, dtype=jnp.uint32),
       action_counts=action_counts,
     )
-    final_carry = inp
     trajectory = []
     step_infos = []
-    for _ in range(num_steps):
-      agent_state_for_step = dataclasses.replace(agent_state, step=inp.step_state)
-      agent_step = self._agent.step(agent_state_for_step, inp.env_step)
-      action = agent_step.action
-      # If action is on GPU, np.array(action) will move it to CPU.
-      obs, reward, done, trunc, info = self._env.step(np.array(action))
 
-      # FYI: This is expensive, moves data to GPU if we use
-      # a GPU backend.
+    # Pre-call agent.step once before the loop to obtain the initial action.
+    agent_state_for_step = dataclasses.replace(agent_state, step=inp.step_state)
+    agent_step = self._agent.step(agent_state_for_step, inp.env_step)
+
+    for _ in range(num_steps):
+      # First: use the action from the previous agent.step to step the env.
+      obs, reward, done, trunc, info = self._env.step(np.array(agent_step.action))
+      # Convert results to JAX arrays and combine done and truncation.
       obs = jnp.array(obs)
       reward = jnp.array(reward)
       done = jnp.array(done | trunc)
 
-      inp = self._inference_cycle_bookkeeping(
-        inp=inp,
-        action=action,
-        done=done,
-        obs=obs,
-        reward=reward,
-        agent_step=agent_step,
-        key=key,
+      # Now combine agent step and bookkeeping in a single jitted call.
+      agent_step, inp = self._agent_step_and_bookkeeping(
+        (agent_state, obs, reward, done, key), inp, agent_step
       )
       trajectory.append(inp.env_step)
       step_infos.append(info)
@@ -607,6 +547,64 @@ class GymnasiumLoop:
       trajectory,
       step_infos,
     )
+
+  def _agent_step_and_bookkeeping(
+    self,
+    args: tuple[
+      AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+      jnp.ndarray,
+      jnp.ndarray,
+      jnp.ndarray,
+      PRNGKeyArray,
+    ],
+    inp: StepCarry,
+    prev_agent_step: AgentStep,
+  ) -> tuple[AgentStep, StepCarry]:
+    """
+    Combines inference cycle bookkeeping with agent.step.
+    Packs the non-donated parameters (agent_state, obs, reward, done, key)
+    into a tuple (first argument) while the donated StepCarry and AgentStep follow.
+    """
+    agent_state, obs, reward, done, key = args
+    if isinstance(self._action_space, Discrete):
+      one_hot_actions = jax.nn.one_hot(
+        prev_agent_step.action,
+        self._action_space.n,
+        dtype=inp.action_counts.dtype,
+      )
+      action_counts = inp.action_counts + jnp.sum(one_hot_actions, axis=0)
+    else:
+      action_counts = inp.action_counts
+
+    next_timestep = EnvStep(done, obs, prev_agent_step.action, reward)
+    episode_steps = inp.episode_steps + 1
+
+    completed_episodes = next_timestep.new_episode
+    episode_length_sum = inp.complete_episode_length_sum + jnp.sum(
+      episode_steps * completed_episodes
+    )
+    episode_count = inp.complete_episode_count + jnp.sum(completed_episodes, dtype=jnp.uint32)
+    episode_steps = jnp.where(completed_episodes, jnp.zeros_like(episode_steps), episode_steps)
+
+    total_reward = inp.total_reward + jnp.sum(next_timestep.reward)
+    total_dones = inp.total_dones + jnp.sum(next_timestep.new_episode, dtype=jnp.uint32)
+
+    new_inp = StepCarry(
+      env_step=next_timestep,
+      env_state=typing.cast(EnvState, None),
+      step_state=prev_agent_step.state,
+      key=key,
+      total_reward=total_reward,
+      total_dones=total_dones,
+      episode_steps=episode_steps,
+      complete_episode_length_sum=episode_length_sum,
+      complete_episode_count=episode_count,
+      action_counts=action_counts,
+    )
+
+    agent_state_for_step = dataclasses.replace(agent_state, step=new_inp.step_state)
+    new_agent_step = self._agent.step(agent_state_for_step, new_inp.env_step)
+    return new_agent_step, new_inp
 
   def close(self):
     self._env.close()
