@@ -62,6 +62,7 @@ py_test(
         "//earl:core",
         "//earl:metric_key",
         "//earl/agents/random_agent",
+        "//earl/agents/simple_policy_gradient",
         "//earl/utils:prng",
         "@pypi//gymnasium",
         "@pypi//gymnax",
