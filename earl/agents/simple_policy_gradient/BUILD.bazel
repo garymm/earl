@@ -4,6 +4,7 @@ load("//tools/py_test:py_test.bzl", "py_test")
 py_library(
     name = "simple_policy_gradient",
     srcs = ["simple_policy_gradient.py"],
+    visibility = ["//visibility:public"],
     deps = [
         "//earl:core",
         "@pypi//equinox",

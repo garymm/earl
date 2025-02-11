@@ -1,15 +1,18 @@
 import dataclasses
+import time
 
 import gymnax
 import gymnax.environments.spaces
 import jax
+import optax
 import pytest
 from gymnasium.envs.classic_control.cartpole import CartPoleEnv
 from gymnasium.envs.classic_control.pendulum import PendulumEnv
-from gymnax.environments.spaces import Discrete
+from gymnax.environments.spaces import Box, Discrete
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
 from earl.agents.random_agent.random_agent import RandomAgent
+from earl.agents.simple_policy_gradient import simple_policy_gradient
 from earl.core import ConflictingMetricError, Metrics, env_info_from_gymnasium
 from earl.environment_loop import CycleResult
 from earl.environment_loop.gymnasium_loop import GymnasiumLoop
@@ -184,3 +187,46 @@ def test_observe_cycle():
   loop.run(agent_state, num_cycles, steps_per_cycle)
   for _, v in metric_writer.scalars.items():
     assert v.get("ran", False)
+
+
+def test_benchmark_gymnasium_inference():
+  num_envs = 16
+  env = CartPoleEnv()
+  env_info = env_info_from_gymnasium(env, num_envs)
+  networks = None
+  key_gen = keygen(jax.random.PRNGKey(0))
+  agent = simple_policy_gradient.SimplePolicyGradient(
+    simple_policy_gradient.Config(
+      max_step_state_history=100,
+      optimizer=optax.adam(1e-3),
+      discount=0.99,
+    )
+  )
+  metric_writer = MemoryWriter()
+  loop = GymnasiumLoop(
+    env,
+    agent,
+    num_envs,
+    next(key_gen),
+    metric_writer=metric_writer,
+    inference=True,
+    vectorization_mode="async",
+  )
+  assert isinstance(env_info.observation_space, Box)
+  assert isinstance(env_info.action_space, Discrete)
+  networks = simple_policy_gradient.make_networks(
+    [env_info.observation_space.shape[0], 200, 200, 200, 200, 200, env_info.action_space.n],
+    jax.random.PRNGKey(0),
+  )
+  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  steps_per_cycle = 100
+  result = loop.run(agent_state, 1, steps_per_cycle)  # warmup
+  assert result.agent_state.step.t == steps_per_cycle
+
+  start = time.monotonic()
+  num_cycles = 2
+  loop.run(result, num_cycles, steps_per_cycle)
+  end = time.monotonic()
+  print(f"Time taken: {end - start} seconds")
+  steps_per_second = num_cycles * steps_per_cycle * num_envs / (end - start)
+  print(f"Steps per second: {steps_per_second}")
