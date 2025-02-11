@@ -30,7 +30,9 @@ classifiers = [
 keywords = ["Equinox", "JAX", "Reinforcement Learning"]
 
 [project.optional-dependencies]
-test = ["coverage>=7.0.0", "pytest>=8.0.0"]
+cuda = ["jax[cuda12]>=0.4.0", "nvtx>=0.2.10"]
+test = ["coverage>=7.0.0", "pytest>=8.0.0", "pytest-repeat==0.9.3"]
+
 
 [project.urls]
 Homepage = "http://github.com/garymm/earl"

@@ -20,6 +20,17 @@ from jax_loop_utils.metric_writers.interface import MetricWriter
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
+try:
+  import nvtx
+
+  nvtx_annotate = nvtx.annotate  # pyright: ignore[reportAssignmentType]
+except ImportError:
+
+  @contextlib.contextmanager
+  def nvtx_annotate(message: str):
+    yield
+
+
 from earl.core import (
   Agent,
   AgentState,
@@ -494,19 +505,21 @@ class GymnasiumLoop:
     agent_step = self._agent.step(agent_state_for_step, inp.env_step)
 
     for _ in range(num_steps):
-      # First: use the action from the previous agent.step to step the env.
-      obs, reward, done, trunc, info = self._env.step(np.array(agent_step.action))
-      # Convert results to JAX arrays and combine done and truncation.
-      obs = jnp.array(obs)
-      reward = jnp.array(reward)
-      done = jnp.array(done | trunc)
+      with nvtx_annotate("inference loop body"):
+        with nvtx_annotate("env.step"):
+          # First: use the action from the previous agent.step to step the env.
+          obs, reward, done, trunc, info = self._env.step(np.array(agent_step.action))
+        # Convert results to JAX arrays and combine done and truncation.
+        obs = jnp.array(obs)
+        reward = jnp.array(reward)
+        done = jnp.array(done | trunc)
 
-      # Now combine agent step and bookkeeping in a single jitted call.
-      agent_step, inp = self._agent_step_and_bookkeeping(
-        (agent_state, obs, reward, done, key), inp, agent_step
-      )
-      trajectory.append(inp.env_step)
-      step_infos.append(info)
+        with nvtx_annotate("agent_step_and_bookkeeping"):
+          agent_step, inp = self._agent_step_and_bookkeeping(
+            (agent_state, obs, reward, done, key), inp, agent_step
+          )
+        trajectory.append(inp.env_step)
+        step_infos.append(info)
 
     final_carry = inp
     agent_state = dataclasses.replace(agent_state, step=final_carry.step_state)
