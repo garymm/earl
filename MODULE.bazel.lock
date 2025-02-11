@@ -729,7 +729,7 @@
         "bzlTransitiveDigest": "h3l5yNW8eXVHIXFfZ1vECDJPLlSAOWTlWDCGnLT9mRw=",
         "usagesDigest": "T0fL24tE1b+5kwPNF/9I8bAf12j/qnhoQArq5gR2sIA=",
         "recordedFileInputs": {
-          "@@//requirements_linux_x86_64.txt": "23f9bb7c0ca9c2ccf22a05917dfdfacbeba5f3b010a6f3762e1c77174df1237e",
+          "@@//requirements_linux_x86_64.txt": "861139a90b89881fdf5b9c63594779663b16bcc7f6d8b6bf99abb5d679a171d7",
           "@@//tools/requirements_basedpyright.txt": "c4bc0a17780fc1e7a7b3ffa4549677e37af6334f890a97eb7931249cf438a286",
           "@@protobuf+//python/requirements.txt": "983be60d3cec4b319dcab6d48aeb3f5b2f7c3350f26b3a9e97486c37967c73c5",
           "@@rules_fuzzing+//fuzzing/requirements.txt": "ab04664be026b632a0d2a2446c4f65982b7654f5b6851d2f9d399a19b7242a5b",
@@ -1445,6 +1445,19 @@
               "python_interpreter_target": "@@rules_python++python+python_3_12_host//:python",
               "repo": "pypi_312",
               "requirement": "pytest==8.3.4 --hash=sha256:50e16d954148559c9a74109af1eaf0c945ba2d8f30f0a3d3335edde19788b6f6 --hash=sha256:965370d062bce11e73868e0335abac31b4d3de0e82f4007408d242b4f8610761"
+            }
+          },
+          "pypi_312_pytest_repeat": {
+            "repoRuleId": "@@rules_python+//python/private/pypi:whl_library.bzl%whl_library",
+            "attributes": {
+              "dep_template": "@pypi//{name}:{target}",
+              "extra_pip_args": [
+                "--index-url",
+                "https://pypi.org/simple"
+              ],
+              "python_interpreter_target": "@@rules_python++python+python_3_12_host//:python",
+              "repo": "pypi_312",
+              "requirement": "pytest-repeat==0.9.3 --hash=sha256:26ab2df18226af9d5ce441c858f273121e92ff55f5bb311d25755b8d7abdd8ed --hash=sha256:ffd3836dfcd67bb270bec648b330e20be37d2966448c4148c4092d1e8aba8185"
             }
           },
           "pypi_312_python_dateutil": {
@@ -4188,6 +4201,7 @@
                 "pygments": "{\"pypi_312_pygments\":[{\"version\":\"3.12\"}]}",
                 "pyparsing": "{\"pypi_312_pyparsing\":[{\"version\":\"3.12\"}]}",
                 "pytest": "{\"pypi_312_pytest\":[{\"version\":\"3.12\"}]}",
+                "pytest_repeat": "{\"pypi_312_pytest_repeat\":[{\"version\":\"3.12\"}]}",
                 "python_dateutil": "{\"pypi_312_python_dateutil\":[{\"version\":\"3.12\"}]}",
                 "pytz": "{\"pypi_312_pytz\":[{\"version\":\"3.12\"}]}",
                 "pyyaml": "{\"pypi_312_pyyaml\":[{\"version\":\"3.12\"}]}",
@@ -4255,6 +4269,7 @@
                 "pygments",
                 "pyparsing",
                 "pytest",
+                "pytest_repeat",
                 "python_dateutil",
                 "pytz",
                 "pyyaml",
