@@ -34,6 +34,7 @@ except ImportError:
 from earl.core import (
   Agent,
   AgentState,
+  AgentStep,
   EnvStep,
   _ExperienceState,
   _Networks,
@@ -279,6 +280,8 @@ class GymnasiumLoop:
       self._inference_cycle_bookkeeping, donate="warn-except-first"
     )
 
+    self._do_agent_step = eqx.filter_jit(self._do_agent_step, donate="warn-except-first")
+
     if not self._inference_only and not self._agent.num_off_policy_optims_per_cycle():
       raise ValueError("On-policy training is not supported in GymnasiumLoop.")
 
@@ -480,22 +483,30 @@ class GymnasiumLoop:
     """Runs self._agent and self._env for num_steps."""
     trajectory = []
     step_infos = []
+    obs, reward, done, trunc, prev_action = (
+      env_step.obs,
+      env_step.reward,
+      env_step.new_episode,
+      jnp.zeros_like(env_step.new_episode),
+      env_step.prev_action,
+    )
 
-    for _ in range(num_steps):
+    for i in range(num_steps):
       with nvtx_annotate("inference loop body"):
         with nvtx_annotate("agent.step"):
-          agent_step = self._agent.step(agent_state, env_step)
+          step_state = agent_state.step
+          agent_state_no_step = dataclasses.replace(agent_state, step=None)
+          # implicit copy of env_step to device
+          agent_step, env_step = self._do_agent_step(
+            agent_state_no_step, step_state, obs, reward, done | trunc, prev_action
+          )
+        if i:
+          trajectory.append(env_step)
         agent_state = dataclasses.replace(agent_state, step=agent_step.state)
 
         with nvtx_annotate("env.step"):
           obs, reward, done, trunc, info = self._env.step(np.array(agent_step.action))
-        # Convert results to JAX arrays and combine done and truncation.
-        obs = jnp.array(obs)
-        reward = jnp.array(reward)
-        done = jnp.array(done | trunc)
 
-        env_step = EnvStep(done, obs, agent_step.action, reward)
-        trajectory.append(env_step)
         step_infos.append(info)
 
     metrics, trajectory_stacked, step_infos_stacked = self._inference_cycle_bookkeeping(
@@ -513,6 +524,23 @@ class GymnasiumLoop:
       trajectory_stacked,
       step_infos_stacked,
     )
+
+  def _do_agent_step(
+    self,
+    agent_state_no_step: AgentState,
+    step_state: _StepState,
+    obs: jax.Array,
+    reward: jax.Array,
+    done: jax.Array,
+    prev_action: jax.Array,
+  ) -> tuple[AgentStep[_StepState], EnvStep]:
+    # This function exists so that we can jit the copy of the env step
+    # and the agent step together.
+    env_step = EnvStep(done, obs, prev_action, reward)
+    agent_step = self._agent.step(
+      dataclasses.replace(agent_state_no_step, step=step_state), env_step
+    )
+    return agent_step, dataclasses.replace(env_step, prev_action=agent_step.action)
 
   def _inference_cycle_bookkeeping(
     self,
