@@ -125,13 +125,19 @@ def env_info_from_gymnasium(env: GymnasiumEnv, num_envs: int) -> EnvInfo:
 # functions are not reconstructed on each call.
 @eqx.filter_jit(donate="all-except-first")
 def _step_jit(
-  env_step: EnvStep,
-  state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
-  step: Callable[
-    [AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep], AgentStep[_StepState]
+  non_donated: tuple[
+    EnvStep,
+    AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    Callable[
+      [AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep],
+      AgentStep[_StepState],
+    ],
   ],
+  step_state: _StepState,
 ) -> AgentStep[_StepState]:
-  return step(state, env_step)
+  env_step, state, step_fn = non_donated
+  state = replace(state, step=step_state)
+  return step_fn(state, env_step)
 
 
 @eqx.filter_jit(donate="all-except-first")
@@ -385,8 +391,9 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
     Returns:
         AgentStep which contains the batch of actions and the updated step state.
     """
-    # swap order of args so we can avoid donating env_step
-    return _step_jit(env_step, state, self._step)
+    # we only want to donate state.step
+    step_state = state.step
+    return _step_jit((env_step, replace(state, step=None), self._step), step_state)
 
   @abc.abstractmethod
   def _step(
