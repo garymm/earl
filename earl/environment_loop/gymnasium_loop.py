@@ -34,7 +34,6 @@ except ImportError:
 from earl.core import (
   Agent,
   AgentState,
-  AgentStep,
   EnvStep,
   _ExperienceState,
   _Networks,
@@ -48,7 +47,6 @@ from earl.environment_loop import (
   ObserveCycle,
   Result,
   State,
-  StepCarry,
   no_op_observe_cycle,
 )
 from earl.environment_loop._common import (
@@ -274,11 +272,11 @@ class GymnasiumLoop:
     self._update = eqx.filter_jit(update, donate="warn")
 
     if assert_no_recompile:
-      self._agent_step_and_bookkeeping = eqx.debug.assert_max_traces(
-        self._agent_step_and_bookkeeping, max_traces=1
+      self._inference_cycle_bookkeeping = eqx.debug.assert_max_traces(
+        self._inference_cycle_bookkeeping, max_traces=1
       )
-    self._agent_step_and_bookkeeping = eqx.filter_jit(
-      self._agent_step_and_bookkeeping, donate="warn-except-first"
+    self._inference_cycle_bookkeeping = eqx.filter_jit(
+      self._inference_cycle_bookkeeping, donate="warn-except-first"
     )
 
     if not self._inference_only and not self._agent.num_off_policy_optims_per_cycle():
@@ -480,144 +478,104 @@ class GymnasiumLoop:
     key: PRNGKeyArray,
   ) -> CycleResult:
     """Runs self._agent and self._env for num_steps."""
-    if isinstance(self._action_space, Discrete):
-      action_counts = jnp.zeros(self._action_space.n, dtype=jnp.uint32)
-    else:
-      action_counts = jnp.array(0, dtype=jnp.uint32)
-
-    inp = StepCarry(
-      env_step=env_step,
-      env_state=typing.cast(EnvState, None),
-      step_state=agent_state.step,
-      key=key,
-      total_reward=jnp.array(0.0, dtype=jnp.float32),
-      total_dones=jnp.array(0, dtype=jnp.uint32),
-      episode_steps=jnp.zeros(self._num_envs, dtype=jnp.uint32),
-      complete_episode_length_sum=jnp.array(0, dtype=jnp.uint32),
-      complete_episode_count=jnp.array(0, dtype=jnp.uint32),
-      action_counts=action_counts,
-    )
     trajectory = []
     step_infos = []
 
-    # Pre-call agent.step once before the loop to obtain the initial action.
-    agent_state_for_step = dataclasses.replace(agent_state, step=inp.step_state)
-    agent_step = self._agent.step(agent_state_for_step, inp.env_step)
-
     for _ in range(num_steps):
       with nvtx_annotate("inference loop body"):
+        with nvtx_annotate("agent.step"):
+          agent_step = self._agent.step(agent_state, env_step)
+        agent_state = dataclasses.replace(agent_state, step=agent_step.state)
+
         with nvtx_annotate("env.step"):
-          # First: use the action from the previous agent.step to step the env.
           obs, reward, done, trunc, info = self._env.step(np.array(agent_step.action))
         # Convert results to JAX arrays and combine done and truncation.
         obs = jnp.array(obs)
         reward = jnp.array(reward)
         done = jnp.array(done | trunc)
 
-        with nvtx_annotate("agent_step_and_bookkeeping"):
-          agent_step, inp = self._agent_step_and_bookkeeping(
-            (agent_state, obs, reward, done, key), inp, agent_step
-          )
-        trajectory.append(inp.env_step)
+        env_step = EnvStep(done, obs, agent_step.action, reward)
+        trajectory.append(env_step)
         step_infos.append(info)
 
-    final_carry = inp
-    agent_state = dataclasses.replace(agent_state, step=final_carry.step_state)
-    # mean across complete episodes
-    complete_episode_length_mean = jnp.where(
-      final_carry.complete_episode_count > 0,
-      final_carry.complete_episode_length_sum / final_carry.complete_episode_count,
-      0,
+    metrics, trajectory_stacked, step_infos_stacked = self._inference_cycle_bookkeeping(
+      trajectory=trajectory,
+      step_infos=step_infos,
     )
-    assert isinstance(complete_episode_length_mean, jax.Array)
-
-    metrics = {}
-    # mean across environments
-    metrics[MetricKey.COMPLETE_EPISODE_LENGTH_MEAN] = jnp.mean(complete_episode_length_mean)
-    metrics[MetricKey.NUM_ENVS_THAT_DID_NOT_COMPLETE] = jnp.sum(
-      final_carry.complete_episode_count == 0
-    )
-    metrics[MetricKey.TOTAL_DONES] = final_carry.total_dones
-    metrics[MetricKey.REWARD_SUM] = final_carry.total_reward
-    metrics[MetricKey.REWARD_MEAN] = final_carry.total_reward / self._num_envs
-    metrics[MetricKey.ACTION_COUNTS] = final_carry.action_counts
-
-    # Need to copy final_carry.env_step because _stack_leaves has buffer
-    # donation and we still need the final carry.
-    final_carry_env_step = _copy_pytree(final_carry.env_step)
-    trajectory = _stack_leaves(trajectory)
-    with jax.default_device(jax.devices("cpu")[0]):
-      step_infos = _stack_leaves(step_infos)
-
     return CycleResult(
       agent_state,
       # not really the env state in any meaningful way, but we need to pass something
       # valid to make this code more similar to GymnaxLoop.
       EnvState(time=num_steps),
-      final_carry_env_step,
-      final_carry.key,
+      env_step,
+      key,
       metrics,
-      trajectory,
-      step_infos,
+      trajectory_stacked,
+      step_infos_stacked,
     )
 
-  def _agent_step_and_bookkeeping(
+  def _inference_cycle_bookkeeping(
     self,
-    args: tuple[
-      AgentState[_Networks, _OptState, _ExperienceState, _StepState],
-      jnp.ndarray,
-      jnp.ndarray,
-      jnp.ndarray,
-      PRNGKeyArray,
-    ],
-    inp: StepCarry,
-    prev_agent_step: AgentStep,
-  ) -> tuple[AgentStep, StepCarry]:
-    """
-    Combines inference cycle bookkeeping with agent.step.
-    Packs the non-donated parameters (agent_state, obs, reward, done, key)
-    into a tuple (first argument) while the donated StepCarry and AgentStep follow.
-    """
-    agent_state, obs, reward, done, key = args
+    trajectory: list[EnvStep],
+    step_infos: list[typing.Any],
+  ) -> tuple[ArrayMetrics, EnvStep, dict[typing.Any, typing.Any]]:
+    """Computes metrics."""
+    trajectory_stacked = _stack_leaves(trajectory)
+
+    # Calculate episode steps and completion metrics using array operations
+    # Shape: (num_envs, num_steps)
+    completed_episodes = trajectory_stacked.new_episode
+    # Shape: (num_envs,)
+    total_dones = jnp.sum(completed_episodes, axis=1, dtype=jnp.uint32)
+    # Shape: (num_steps,)
+    step_indices = jnp.arange(1, len(trajectory) + 1, dtype=jnp.uint32)
+    # Shape: (num_envs,)
+    complete_episode_count = jnp.sum(completed_episodes, axis=1, dtype=jnp.uint32)
+    # Shape: (num_envs,)
+    complete_episode_length_sum = jnp.sum(
+      step_indices[None, :] * completed_episodes, axis=1, dtype=jnp.uint32
+    )
+
+    # Calculate action counts
     if isinstance(self._action_space, Discrete):
       one_hot_actions = jax.nn.one_hot(
-        prev_agent_step.action,
+        trajectory_stacked.prev_action,
         self._action_space.n,
-        dtype=inp.action_counts.dtype,
+        dtype=jnp.uint32,
       )
-      action_counts = inp.action_counts + jnp.sum(one_hot_actions, axis=0)
+      action_counts = jnp.sum(one_hot_actions, axis=(0, 1))
     else:
-      action_counts = inp.action_counts
+      action_counts = jnp.array(0, dtype=jnp.uint32)
 
-    next_timestep = EnvStep(done, obs, prev_agent_step.action, reward)
-    episode_steps = inp.episode_steps + 1
+    # Calculate reward metrics
+    total_reward = jnp.sum(trajectory_stacked.reward)
 
-    completed_episodes = next_timestep.new_episode
-    episode_length_sum = inp.complete_episode_length_sum + jnp.sum(
-      episode_steps * completed_episodes
+    # Calculate mean episode length for complete episodes
+    complete_episode_length_mean = jnp.where(
+      complete_episode_count > 0,
+      complete_episode_length_sum / complete_episode_count,
+      0,
     )
-    episode_count = inp.complete_episode_count + jnp.sum(completed_episodes, dtype=jnp.uint32)
-    episode_steps = jnp.where(completed_episodes, jnp.zeros_like(episode_steps), episode_steps)
+    assert isinstance(complete_episode_length_mean, jax.Array)
 
-    total_reward = inp.total_reward + jnp.sum(next_timestep.reward)
-    total_dones = inp.total_dones + jnp.sum(next_timestep.new_episode, dtype=jnp.uint32)
+    # Prepare metrics dictionary
+    metrics: ArrayMetrics = {
+      MetricKey.COMPLETE_EPISODE_LENGTH_MEAN: jnp.mean(complete_episode_length_mean),
+      MetricKey.NUM_ENVS_THAT_DID_NOT_COMPLETE: jnp.sum(complete_episode_count == 0),
+      MetricKey.TOTAL_DONES: jnp.sum(total_dones),
+      MetricKey.REWARD_SUM: total_reward,
+      MetricKey.REWARD_MEAN: total_reward / self._num_envs,
+      MetricKey.ACTION_COUNTS: action_counts,
+    }
 
-    new_inp = StepCarry(
-      env_step=next_timestep,
-      env_state=typing.cast(EnvState, None),
-      step_state=prev_agent_step.state,
-      key=key,
-      total_reward=total_reward,
-      total_dones=total_dones,
-      episode_steps=episode_steps,
-      complete_episode_length_sum=episode_length_sum,
-      complete_episode_count=episode_count,
-      action_counts=action_counts,
+    with jax.default_device(jax.devices("cpu")[0]):
+      step_infos_stacked = typing.cast(dict[typing.Any, typing.Any], _stack_leaves(step_infos))
+
+    return (
+      metrics,
+      trajectory_stacked,
+      step_infos_stacked,
     )
-
-    agent_state_for_step = dataclasses.replace(agent_state, step=new_inp.step_state)
-    new_agent_step = self._agent.step(agent_state_for_step, new_inp.env_step)
-    return new_agent_step, new_inp
 
   def close(self):
     self._env.close()
