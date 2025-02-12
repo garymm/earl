@@ -484,17 +484,14 @@ class GymnasiumLoop:
     for _ in range(num_steps):
       with nvtx_annotate("inference loop body"):
         with nvtx_annotate("agent.step"):
+          # implicit copy of env_step to device
           agent_step = self._agent.step(agent_state, env_step)
         agent_state = dataclasses.replace(agent_state, step=agent_step.state)
 
         with nvtx_annotate("env.step"):
           obs, reward, done, trunc, info = self._env.step(np.array(agent_step.action))
-        # Convert results to JAX arrays and combine done and truncation.
-        obs = jnp.array(obs)
-        reward = jnp.array(reward)
-        done = jnp.array(done | trunc)
+        env_step = EnvStep(done | trunc, obs, agent_step.action, reward)
 
-        env_step = EnvStep(done, obs, agent_step.action, reward)
         trajectory.append(env_step)
         step_infos.append(info)
 
@@ -514,11 +511,7 @@ class GymnasiumLoop:
       step_infos_stacked,
     )
 
-  def _inference_cycle_bookkeeping(
-    self,
-    trajectory: list[EnvStep],
-    step_infos: list[typing.Any],
-  ) -> tuple[ArrayMetrics, EnvStep, dict[typing.Any, typing.Any]]:
+  def _inference_cycle_bookkeeping(self, trajectory: list[EnvStep]) -> tuple[ArrayMetrics, EnvStep]:
     """Computes metrics."""
     trajectory_stacked = _stack_leaves(trajectory)
 
@@ -568,14 +561,7 @@ class GymnasiumLoop:
       MetricKey.ACTION_COUNTS: action_counts,
     }
 
-    with jax.default_device(jax.devices("cpu")[0]):
-      step_infos_stacked = typing.cast(dict[typing.Any, typing.Any], _stack_leaves(step_infos))
-
-    return (
-      metrics,
-      trajectory_stacked,
-      step_infos_stacked,
-    )
+    return metrics, trajectory_stacked
 
   def close(self):
     self._env.close()
