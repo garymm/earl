@@ -509,10 +509,10 @@ class GymnasiumLoop:
 
         step_infos.append(info)
 
-    metrics, trajectory_stacked, step_infos_stacked = self._inference_cycle_bookkeeping(
-      trajectory=trajectory,
-      step_infos=step_infos,
-    )
+    metrics, trajectory_stacked = self._inference_cycle_bookkeeping(trajectory=trajectory)
+
+    with jax.default_device(jax.devices("cpu")[0]):
+      step_infos_stacked = typing.cast(dict[typing.Any, typing.Any], _stack_leaves(step_infos))
     return CycleResult(
       agent_state,
       # not really the env state in any meaningful way, but we need to pass something
@@ -542,15 +542,10 @@ class GymnasiumLoop:
     )
     return agent_step, dataclasses.replace(env_step, prev_action=agent_step.action)
 
-  def _inference_cycle_bookkeeping(
-    self,
-    trajectory: list[EnvStep],
-    step_infos: list[typing.Any],
-  ) -> tuple[ArrayMetrics, EnvStep, dict[typing.Any, typing.Any]]:
+  def _inference_cycle_bookkeeping(self, trajectory: list[EnvStep]) -> tuple[ArrayMetrics, EnvStep]:
     """Computes metrics."""
     trajectory_stacked = _stack_leaves(trajectory)
 
-    # Calculate episode steps and completion metrics using array operations
     # Shape: (num_envs, num_steps)
     completed_episodes = trajectory_stacked.new_episode
     # Shape: (num_envs,)
@@ -564,7 +559,6 @@ class GymnasiumLoop:
       step_indices[None, :] * completed_episodes, axis=1, dtype=jnp.uint32
     )
 
-    # Calculate action counts
     if isinstance(self._action_space, Discrete):
       one_hot_actions = jax.nn.one_hot(
         trajectory_stacked.prev_action,
@@ -575,10 +569,8 @@ class GymnasiumLoop:
     else:
       action_counts = jnp.array(0, dtype=jnp.uint32)
 
-    # Calculate reward metrics
     total_reward = jnp.sum(trajectory_stacked.reward)
 
-    # Calculate mean episode length for complete episodes
     complete_episode_length_mean = jnp.where(
       complete_episode_count > 0,
       complete_episode_length_sum / complete_episode_count,
@@ -586,7 +578,6 @@ class GymnasiumLoop:
     )
     assert isinstance(complete_episode_length_mean, jax.Array)
 
-    # Prepare metrics dictionary
     metrics: ArrayMetrics = {
       MetricKey.COMPLETE_EPISODE_LENGTH_MEAN: jnp.mean(complete_episode_length_mean),
       MetricKey.NUM_ENVS_THAT_DID_NOT_COMPLETE: jnp.sum(complete_episode_count == 0),
@@ -596,14 +587,7 @@ class GymnasiumLoop:
       MetricKey.ACTION_COUNTS: action_counts,
     }
 
-    with jax.default_device(jax.devices("cpu")[0]):
-      step_infos_stacked = typing.cast(dict[typing.Any, typing.Any], _stack_leaves(step_infos))
-
-    return (
-      metrics,
-      trajectory_stacked,
-      step_infos_stacked,
-    )
+    return metrics, trajectory_stacked
 
   def close(self):
     self._env.close()
