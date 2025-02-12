@@ -72,8 +72,6 @@ class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _St
   Set to optax.OptState if you only have one optimizer, or you can set it to a custom class."""
   experience: _ExperienceState
   """experience replay buffer state."""
-  inference: bool = False
-  """True means inference mode, False means training."""
 
 
 class AgentStep(NamedTuple, Generic[_StepState]):
@@ -276,7 +274,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
   """
 
   def new_state(
-    self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray, inference: bool = False
+    self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray
   ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
     """Initializes agent state.
 
@@ -284,37 +282,20 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
         nets: the agent's neural networks. Donated, so callers should not access it after calling.
         key: a PRNG key. Used to generate keys for hidden, opt, and experience.
             Donated, so callers should not access it after calling.
-        inference: if True, initialize the state for inference (opt and experience are None).
     """
 
     # helper funcion to wrap with jit.
     @eqx.filter_jit(donate="all")
     def _helper(nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray):
-      hidden_key, opt_key, replay_key = jax.random.split(key, 3)
-      if inference:
-        return AgentState(
-          step=self.new_step_state(nets, env_info, key),
-          nets=nets,
-          opt=None,
-          experience=None,
-          inference=True,
-        )
-      else:
-        return AgentState(
-          step=self.new_step_state(nets, env_info, hidden_key),
-          nets=nets,
-          opt=self.new_opt_state(nets, env_info, opt_key),
-          experience=self.new_experience_state(nets, env_info, replay_key),
-        )
+      step_key, opt_key, replay_key = jax.random.split(key, 3)
+      return AgentState(
+        step=self.new_step_state(nets, env_info, step_key),
+        nets=nets,
+        opt=self.new_opt_state(nets, env_info, opt_key),
+        experience=self.new_experience_state(nets, env_info, replay_key),
+      )
 
-    # Not sure if the type ignore is the best thing.
-    # I want to avoid all implementors of _loss and _optimize_from_grads having to assert
-    # that opt and replay are not None, so I don't want to mark the fields optional.
-    # I tried adding making the fields optional and then adding another class, TrainingState,
-    # that is the same as AgentState but with the optional fields marked non-optional.
-    # However this would require implementors to deal with another type, so it's not clear
-    # it's a win.
-    return _helper(nets, env_info, key)  # type: ignore[return-value]
+    return _helper(nets, env_info, key)
 
   def new_step_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _StepState:
     """Returns a new step state.
