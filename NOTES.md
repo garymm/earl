@@ -12,7 +12,7 @@ One global queue: deque[Networks], which has maxlen 1 (can do 2 to avoid blockin
 Inferencer:
 * copy latest networks to inference device.
 * run inference cycle.
-* calls Agent.shard_step_state(step_state, sharding), copies trajectory to update devices. append tuple(initial StepState, trajectory) to queue.
+* calls Agent.shard_step_state(step_state, sharding), copies trajectory and step state to update devices. append tuple(initial StepState, final StepStat, trajectory) to queue.
 
 Later optimization: double buffering so we have two threads per inferencer, one that is stepping agent one that is stepping environment. Essentially doubles the number of inferencers. Doesn't actually complicate things too much.
 
