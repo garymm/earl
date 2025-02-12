@@ -59,7 +59,7 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
   agent_state = agent.new_state(networks, env_info, next(key_gen))
   result = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
-  assert result.agent_state.step.t == num_cycles * steps_per_cycle
+  assert result.agent_state.actor.t == num_cycles * steps_per_cycle
   metrics = metric_writer.scalars
   assert len(metrics) == num_cycles
   first_step_num, last_step_num = None, None
@@ -197,7 +197,7 @@ def test_benchmark_gymnasium_inference():
   key_gen = keygen(jax.random.PRNGKey(0))
   agent = simple_policy_gradient.SimplePolicyGradient(
     simple_policy_gradient.Config(
-      max_step_state_history=100,
+      max_actor_state_history=100,
       optimizer=optax.adam(1e-3),
       discount=0.99,
     )
@@ -221,7 +221,7 @@ def test_benchmark_gymnasium_inference():
   agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
   steps_per_cycle = 100
   result = loop.run(agent_state, 1, steps_per_cycle)  # warmup
-  assert result.agent_state.step.t == steps_per_cycle
+  assert result.agent_state.actor.t == steps_per_cycle
 
   start = time.monotonic()
   num_cycles = 2

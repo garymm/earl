@@ -18,10 +18,10 @@ from earl.core import (
   Agent,
   AgentState,
   EnvStep,
+  _ActorState,
   _ExperienceState,
   _Networks,
   _OptState,
-  _StepState,
 )
 from earl.environment_loop import (
   ArrayMetrics,
@@ -29,7 +29,6 @@ from earl.environment_loop import (
   ObserveCycle,
   Result,
   State,
-  StepCarry,
   no_op_observe_cycle,
 )
 from earl.environment_loop._common import (
@@ -57,6 +56,20 @@ def _loss_for_cycle_grad(
   mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
   mutable_metrics[MetricKey.LOSS] = loss
   return loss, mutable_metrics
+
+
+class StepCarry(eqx.Module, typing.Generic[_ActorState]):
+  env_step: EnvStep
+  env_state: EnvState
+  actor_state: _ActorState
+  key: PRNGKeyArray
+  total_reward: Scalar
+  total_dones: Scalar
+  """Number of steps in current episode for each environment."""
+  episode_steps: jax.Array
+  complete_episode_length_sum: Scalar
+  complete_episode_count: Scalar
+  action_counts: jax.Array
 
 
 class GymnaxLoop:
@@ -155,12 +168,12 @@ class GymnaxLoop:
 
   def run(
     self,
-    state: State[_Networks, _OptState, _ExperienceState, _StepState]
-    | AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    state: State[_Networks, _OptState, _ExperienceState, _ActorState]
+    | AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     num_cycles: int,
     steps_per_cycle: int,
     print_progress: bool = True,
-  ) -> Result[_Networks, _OptState, _ExperienceState, _StepState]:
+  ) -> Result[_Networks, _OptState, _ExperienceState, _ActorState]:
     """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
     Args:
@@ -257,8 +270,8 @@ class GymnaxLoop:
     )
 
   def _off_policy_update(
-    self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
-  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
+    self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], _
+  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
     nets_grad, metrics = _loss_for_cycle_grad(
       nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
@@ -271,7 +284,7 @@ class GymnaxLoop:
 
   def _run_cycle_and_update(
     self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     env_state: EnvState,
     env_step: EnvStep,
     key: PRNGKeyArray,
@@ -283,7 +296,7 @@ class GymnaxLoop:
     def _run_cycle_and_loss_grad(
       nets_yes_grad: PyTree,
       nets_no_grad: PyTree,
-      other_agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+      other_agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
       env_state: EnvState,
       env_step: EnvStep,
       num_steps: int,
@@ -356,7 +369,7 @@ class GymnaxLoop:
 
   def _run_cycle(
     self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     env_state: EnvState,
     env_step: EnvStep,
     num_steps: int,
@@ -365,12 +378,12 @@ class GymnaxLoop:
     """Runs self._agent and self._env for num_steps."""
 
     def scan_body(
-      inp: StepCarry[_StepState], _
-    ) -> tuple[StepCarry[_StepState], tuple[EnvStep, dict[Any, Any]]]:
-      agent_state_for_step = dataclasses.replace(agent_state, step=inp.step_state)
+      inp: StepCarry[_ActorState], _
+    ) -> tuple[StepCarry[_ActorState], tuple[EnvStep, dict[Any, Any]]]:
+      agent_state_for_step = dataclasses.replace(agent_state, actor=inp.actor_state)
 
-      agent_step = self._agent.step(agent_state_for_step, inp.env_step)
-      action = agent_step.action
+      action_and_state = self._agent.act(agent_state_for_step, inp.env_step)
+      action = action_and_state.action
       if isinstance(self._action_space, Discrete):
         one_hot_actions = jax.nn.one_hot(
           action, self._action_space.n, dtype=inp.action_counts.dtype
@@ -402,7 +415,7 @@ class GymnaxLoop:
         StepCarry(
           env_step=next_timestep,
           env_state=env_state,
-          step_state=agent_step.state,
+          actor_state=action_and_state.state,
           key=key,
           total_reward=total_reward,
           total_dones=total_dones,
@@ -426,7 +439,7 @@ class GymnaxLoop:
       init=StepCarry(
         env_step=env_step,
         env_state=env_state,
-        step_state=agent_state.step,
+        actor_state=agent_state.actor,
         key=key,
         total_reward=jnp.array(0.0),
         total_dones=jnp.array(0, dtype=jnp.uint32),
@@ -439,7 +452,7 @@ class GymnaxLoop:
       length=num_steps,
     )
 
-    agent_state = dataclasses.replace(agent_state, step=final_carry.step_state)
+    agent_state = dataclasses.replace(agent_state, actor=final_carry.actor_state)
     # mean across complete episodes
     complete_episode_length_mean = jnp.where(
       final_carry.complete_episode_count > 0,

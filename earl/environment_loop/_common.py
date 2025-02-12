@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from gymnax import EnvState
 from jax_loop_utils.metric_writers.interface import Scalar as ScalarMetric
-from jaxtyping import PRNGKeyArray, PyTree, Scalar
+from jaxtyping import PRNGKeyArray, PyTree
 
 from earl.core import (
   AgentState,
@@ -18,10 +18,10 @@ from earl.core import (
   Image,
   Metrics,
   Video,
+  _ActorState,
   _ExperienceState,
   _Networks,
   _OptState,
-  _StepState,
 )
 from earl.metric_key import MetricKey
 
@@ -72,20 +72,6 @@ def no_op_observe_cycle(cycle_result: CycleResult) -> Metrics:
   return {}
 
 
-class StepCarry(eqx.Module, Generic[_StepState]):
-  env_step: EnvStep
-  env_state: EnvState
-  step_state: _StepState
-  key: PRNGKeyArray
-  total_reward: Scalar
-  total_dones: Scalar
-  """Number of steps in current episode for each environment."""
-  episode_steps: jax.Array
-  complete_episode_length_sum: Scalar
-  complete_episode_count: Scalar
-  action_counts: jax.Array
-
-
 def raise_if_metric_conflicts(metrics: Mapping):
   conflicting_keys = [k for k in metrics if k in _ALL_METRIC_KEYS]
   if not conflicting_keys:
@@ -122,8 +108,8 @@ def pytree_leaf_means(pytree: PyTree, prefix: str) -> dict[str, jax.Array]:
 
 
 @dataclasses.dataclass(frozen=True)
-class State(Generic[_Networks, _OptState, _ExperienceState, _StepState]):
-  agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]
+class State(Generic[_Networks, _OptState, _ExperienceState, _ActorState]):
+  agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState]
   env_state: EnvState | None = None
   env_step: EnvStep | None = None
   step_num: int = 0
@@ -139,7 +125,7 @@ Args:
 
 
 @dataclasses.dataclass(frozen=True)
-class Result(State[_Networks, _OptState, _ExperienceState, _StepState]):
+class Result(State[_Networks, _OptState, _ExperienceState, _ActorState]):
   """A State but with all fields guaranteed to be not None."""
 
   # Note: defaults are just to please the type checker, since the base class has defaults.

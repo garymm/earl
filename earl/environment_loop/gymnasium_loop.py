@@ -35,10 +35,10 @@ from earl.core import (
   Agent,
   AgentState,
   EnvStep,
+  _ActorState,
   _ExperienceState,
   _Networks,
   _OptState,
-  _StepState,
   env_info_from_gymnasium,
 )
 from earl.environment_loop import (
@@ -310,12 +310,12 @@ class GymnasiumLoop:
 
   def run(
     self,
-    state: State[_Networks, _OptState, _ExperienceState, _StepState]
-    | AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    state: State[_Networks, _OptState, _ExperienceState, _ActorState]
+    | AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     num_cycles: int,
     steps_per_cycle: int,
     print_progress: bool = True,
-  ) -> Result[_Networks, _OptState, _ExperienceState, _StepState]:
+  ) -> Result[_Networks, _OptState, _ExperienceState, _ActorState]:
     """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
     Args:
@@ -394,7 +394,7 @@ class GymnasiumLoop:
         inference_result = self._inference_cycle(
           agent_state_for_inference, env_step, steps_per_cycle, self._key
         )
-      agent_state = dataclasses.replace(agent_state, step=inference_result.agent_state.step)
+      agent_state = dataclasses.replace(agent_state, actor=inference_result.agent_state.actor)
       cycle_result = dataclasses.replace(inference_result, agent_state=agent_state)
 
       if self._inference_only:
@@ -442,8 +442,8 @@ class GymnasiumLoop:
     )
 
   def _off_policy_update(
-    self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
-  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
+    self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], _
+  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
     grad, metrics = _loss_for_cycle_grad(
       nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
@@ -455,9 +455,9 @@ class GymnasiumLoop:
 
   def _update(
     self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     metrics: ArrayMetrics,
-  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
+  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     agent_state, off_policy_metrics = filter_scan(
       self._off_policy_update,
       init=agent_state,
@@ -472,7 +472,7 @@ class GymnasiumLoop:
 
   def _inference_cycle(
     self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     env_step: EnvStep,
     num_steps: int,
     key: PRNGKeyArray,
@@ -485,12 +485,12 @@ class GymnasiumLoop:
       with nvtx_annotate("inference loop body"):
         with nvtx_annotate("agent.step"):
           # implicit copy of env_step to device
-          agent_step = self._agent.step(agent_state, env_step)
-        agent_state = dataclasses.replace(agent_state, step=agent_step.state)
+          action_and_state = self._agent.act(agent_state, env_step)
+        agent_state = dataclasses.replace(agent_state, actor=action_and_state.state)
 
         with nvtx_annotate("env.step"):
-          obs, reward, done, trunc, info = self._env.step(np.array(agent_step.action))
-        env_step = EnvStep(done | trunc, obs, agent_step.action, reward)
+          obs, reward, done, trunc, info = self._env.step(np.array(action_and_state.action))
+        env_step = EnvStep(done | trunc, obs, action_and_state.action, reward)
 
         trajectory.append(env_step)
         step_infos.append(info)

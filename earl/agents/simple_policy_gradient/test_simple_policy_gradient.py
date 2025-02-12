@@ -19,7 +19,7 @@ def test_learns_cart_pole():
   steps_per_cycle = 80
   num_cycles = 50
 
-  config = Config(max_step_state_history=steps_per_cycle, optimizer=optax.adam(5e-3))
+  config = Config(max_actor_state_history=steps_per_cycle, optimizer=optax.adam(5e-3))
   agent = SimplePolicyGradient(config)
   (input_shape,) = env.obs_shape
 

@@ -46,7 +46,7 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
   agent_state = agent.new_state(networks, env_info, next(key_gen))
   result = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
-  assert result.agent_state.step.t == num_cycles * steps_per_cycle
+  assert result.agent_state.actor.t == num_cycles * steps_per_cycle
   metrics = metric_writer.scalars
   assert len(metrics) == num_cycles
   first_step_num, last_step_num = None, None

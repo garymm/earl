@@ -34,7 +34,7 @@ class Video(eqx.Module):
 
 _Networks = TypeVar("_Networks", bound=PyTree)
 _OptState = TypeVar("_OptState")
-_StepState = TypeVar("_StepState")
+_ActorState = TypeVar("_ActorState")
 _ExperienceState = TypeVar("_ExperienceState")
 # Keyed by name.
 Metrics = Mapping[str, Scalar | float | int | Image | Video]
@@ -48,7 +48,7 @@ class SupportsStr(Protocol):
 ConfigForLog = Mapping[str, SupportsStr]
 
 
-class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepState]):
+class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorState]):
   """The state of an agent.
 
   All pytree leaves in the fields of any subclass must be one of the following types:
@@ -56,8 +56,8 @@ class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _St
   by orbax.
   """
 
-  step: _StepState
-  """Contains anything that needs to be updated on each step (other than replay buffers).
+  actor: _ActorState
+  """Contains anything that needs to be updated on each act().
   Typically random keys and RNN states go here."""
   nets: _Networks
   """neural networks. It must be a PyTree since it will
@@ -74,11 +74,11 @@ class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _St
   """experience replay buffer state."""
 
 
-class AgentStep(NamedTuple, Generic[_StepState]):
-  """A batch of actions and updated hidden state."""
+class ActionAndState(NamedTuple, Generic[_ActorState]):
+  """A batch of actions and updated actor state."""
 
   action: jax.Array
-  state: _StepState
+  state: _ActorState
 
 
 class EnvStep(eqx.Module):
@@ -122,28 +122,28 @@ def env_info_from_gymnasium(env: GymnasiumEnv, num_envs: int) -> EnvInfo:
 # Need to define these functions up here instead of nested so that the
 # functions are not reconstructed on each call.
 @eqx.filter_jit(donate="all-except-first")
-def _step_jit(
+def _act_jit(
   non_donated: tuple[
     EnvStep,
-    AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     Callable[
-      [AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep],
-      AgentStep[_StepState],
+      [AgentState[_Networks, _OptState, _ExperienceState, _ActorState], EnvStep],
+      ActionAndState[_ActorState],
     ],
   ],
-  step_state: _StepState,
-) -> AgentStep[_StepState]:
-  env_step, state, step_fn = non_donated
-  state = replace(state, step=step_state)
-  return step_fn(state, env_step)
+  actor_state: _ActorState,
+) -> ActionAndState[_ActorState]:
+  env_step, state, act_fn = non_donated
+  state = replace(state, actor=actor_state)
+  return act_fn(state, env_step)
 
 
 @eqx.filter_jit(donate="all-except-first")
 def _update_experience_jit(
-  others: tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep],
+  others: tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], EnvStep],
   experience: _ExperienceState,
   update_experience: Callable[
-    [AgentState[_Networks, _OptState, _ExperienceState, _StepState], EnvStep], _ExperienceState
+    [AgentState[_Networks, _OptState, _ExperienceState, _ActorState], EnvStep], _ExperienceState
   ],
 ):
   agent_state_no_exp, trajectory = others
@@ -160,11 +160,11 @@ def _partition_for_grad_jit(
 
 @eqx.filter_jit(donate="all")
 def _optimize_from_grads_jit(
-  state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+  state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
   nets_grads: PyTree,
   optimize_from_grads: Callable[
-    [AgentState[_Networks, _OptState, _ExperienceState, _StepState], PyTree],
-    AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    [AgentState[_Networks, _OptState, _ExperienceState, _ActorState], PyTree],
+    AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
   ],
 ):
   return optimize_from_grads(state, nets_grads)
@@ -172,9 +172,9 @@ def _optimize_from_grads_jit(
 
 @eqx.filter_jit(donate="all")
 def _loss_jit(
-  state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+  state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
   loss: Callable[
-    [AgentState[_Networks, _OptState, _ExperienceState, _StepState]], tuple[Scalar, Metrics]
+    [AgentState[_Networks, _OptState, _ExperienceState, _ActorState]], tuple[Scalar, Metrics]
   ],
 ):
   return loss(state)
@@ -201,7 +201,7 @@ def _convert_gymnasium_space_to_gymnax_space(gym_space: gym_spaces.Space) -> gym
     raise ValueError(f"Unsupported Gymnasium space type: {type(gym_space)}")
 
 
-class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepState]):
+class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorState]):
   """Abstract class for a reinforcement learning agent.
 
   Sub-classes should:
@@ -233,7 +233,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
       state = replace(state, nets=eqx.combine(nets_to_grad, nets_no_grad))
       trajectory = []
       for step in range(steps_per_cycle):
-          action, state.hidden = a.select_action(state, env_step)
+          action, state.actor = a.act(state, env_step)
           env_step = env.step(action)
           trajectory.append(env_step)
       state.experience = a.update_experience(state, trajectory)
@@ -254,7 +254,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
   def run_cycle(state, env_step):
       trajectory = []
       for step in range(steps_per_cycle):
-          action, state.hidden = a.select_action(state, env_step)
+          action, state.actor = a.act(state, env_step)
           env_step = env.step(action)
           trajectory.append(env_step)
       return state, trajectory
@@ -275,12 +275,12 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
   def new_state(
     self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray
-  ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
+  ) -> AgentState[_Networks, _OptState, _ExperienceState, _ActorState]:
     """Initializes agent state.
 
     Args:
         nets: the agent's neural networks. Donated, so callers should not access it after calling.
-        key: a PRNG key. Used to generate keys for hidden, opt, and experience.
+        key: a PRNG key. Used to generate keys for actor, opt, and experience.
             Donated, so callers should not access it after calling.
     """
 
@@ -289,7 +289,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
     def _helper(nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray):
       step_key, opt_key, replay_key = jax.random.split(key, 3)
       return AgentState(
-        step=self.new_step_state(nets, env_info, step_key),
+        actor=self.new_actor_state(nets, env_info, step_key),
         nets=nets,
         opt=self.new_opt_state(nets, env_info, opt_key),
         experience=self.new_experience_state(nets, env_info, replay_key),
@@ -297,19 +297,19 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
     return _helper(nets, env_info, key)
 
-  def new_step_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _StepState:
-    """Returns a new step state.
+  def new_actor_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _ActorState:
+    """Returns a new actor state.
 
     Args:
         nets: the agent's neural networks.
         env_info: info about the environment.
         key: a PRNG key.
     """
-    return eqx.filter_jit(self._new_step_state)(nets, env_info, key)
+    return eqx.filter_jit(self._new_actor_state)(nets, env_info, key)
 
   @abc.abstractmethod
-  def _new_step_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _StepState:
-    """Returns a new step state.
+  def _new_actor_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _ActorState:
+    """Returns a new actor state.
 
     Must be jit-compatible.
     """
@@ -354,14 +354,14 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
     Must be jit-compatible.
     """
 
-  def step(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], env_step: EnvStep
-  ) -> AgentStep[_StepState]:
-    """Selects a batch of actions and updates step state.
+  def act(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], env_step: EnvStep
+  ) -> ActionAndState[_ActorState]:
+    """Selects a batch of actions and updates actor state.
 
-    Sub-classes should override _select_action. This method is a wrapper that adds jit-compilation.
+    Sub-classes should override _act. This method is a wrapper that adds jit-compilation.
 
-    TODO: change interface to take in only _Networks and _StepState, which will let us avoid copying
+    TODO: change interface to take in only _Networks and _ActorState, which will let us avoid copying
     those when doing inference on a different device.
 
     Args:
@@ -372,21 +372,23 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
     Returns:
         AgentStep which contains the batch of actions and the updated step state.
     """
-    # we only want to donate state.step
-    step_state = state.step
-    return _step_jit((env_step, replace(state, step=None), self._step), step_state)
+    # we only want to donate state.actor
+    actor_state = state.actor
+    return _act_jit((env_step, replace(state, actor=None), self._act), actor_state)
 
   @abc.abstractmethod
-  def _step(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], env_step: EnvStep
-  ) -> AgentStep[_StepState]:
-    """Selects a batch of actions and updates hidden state.
+  def _act(
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], env_step: EnvStep
+  ) -> ActionAndState[_ActorState]:
+    """Selects a batch of actions and updates actor state.
 
     Must be jit-compatible.
     """
 
   def update_experience(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], trajectory: EnvStep
+    self,
+    state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
+    trajectory: EnvStep,
   ) -> _ExperienceState:
     """Observes a trajectory of environment timesteps and updates the experience state.
 
@@ -408,7 +410,9 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
   @abc.abstractmethod
   def _update_experience(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], trajectory: EnvStep
+    self,
+    state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
+    trajectory: EnvStep,
   ) -> _ExperienceState:
     """Observes a trajectory of environment timesteps and updates the experience state.
 
@@ -440,7 +444,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
     return eqx.partition(nets, eqx.is_array)
 
   def loss(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState]
   ) -> tuple[Scalar, Metrics]:
     """Returns loss and metrics. Called after some number of environment steps.
 
@@ -454,7 +458,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
   @abc.abstractmethod
   def _loss(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState]
   ) -> tuple[Scalar, Metrics]:
     """Returns loss and metrics. Called after some number of environment steps.
 
@@ -462,8 +466,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
     """
 
   def optimize_from_grads(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], nets_grads: PyTree
-  ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], nets_grads: PyTree
+  ) -> AgentState[_Networks, _OptState, _ExperienceState, _ActorState]:
     """Optimizes agent state based on gradients of the losses returned by self.loss().
 
     Sub-classes should override _optimize_from_grads. This method is a wrapper that adds
@@ -478,8 +482,8 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _StepSta
 
   @abc.abstractmethod
   def _optimize_from_grads(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], nets_grads: PyTree
-  ) -> AgentState[_Networks, _OptState, _ExperienceState, _StepState]:
+    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], nets_grads: PyTree
+  ) -> AgentState[_Networks, _OptState, _ExperienceState, _ActorState]:
     """Optimizes agent state based on gradients of the losses returned by self._loss().
 
     Must be jit-compatible.

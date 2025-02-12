@@ -7,11 +7,11 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.core import Agent, AgentStep, EnvInfo, EnvStep, Metrics
+from earl.core import ActionAndState, Agent, EnvInfo, EnvStep, Metrics
 from earl.core import AgentState as CoreAgentState
 
 
-class StepState(eqx.Module):
+class ActorState(eqx.Module):
   chosen_action_log_probs: jax.Array
   key: PRNGKeyArray
   mask: jax.Array  # 0 if env was ever done.
@@ -21,7 +21,7 @@ class StepState(eqx.Module):
 
 @dataclasses.dataclass(eq=True, frozen=True)
 class Config:
-  max_step_state_history: int
+  max_actor_state_history: int
   optimizer: optax.GradientTransformation
   discount: float = 0.99
 
@@ -35,10 +35,10 @@ def make_networks(layer_dims: list[int], key: PRNGKeyArray) -> eqx.nn.Sequential
   return eqx.nn.Sequential(layers)
 
 
-AgentState = CoreAgentState[eqx.nn.Sequential, optax.OptState, None, StepState]
+AgentState = CoreAgentState[eqx.nn.Sequential, optax.OptState, None, ActorState]
 
 
-class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, StepState]):
+class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, ActorState]):
   """Simple policy gradient agent.
 
   Based on https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html.
@@ -50,14 +50,14 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, StepSt
 
   config: Config
 
-  def _new_step_state(
+  def _new_actor_state(
     self, nets: eqx.nn.Sequential, env_info: EnvInfo, key: PRNGKeyArray
-  ) -> StepState:
-    return StepState(
-      chosen_action_log_probs=jnp.zeros((env_info.num_envs, self.config.max_step_state_history)),
+  ) -> ActorState:
+    return ActorState(
+      chosen_action_log_probs=jnp.zeros((env_info.num_envs, self.config.max_actor_state_history)),
       key=key,
       mask=jnp.ones((env_info.num_envs,), dtype=jnp.bool),
-      rewards=jnp.zeros((env_info.num_envs, self.config.max_step_state_history)),
+      rewards=jnp.zeros((env_info.num_envs, self.config.max_actor_state_history)),
       t=jnp.array(0, dtype=jnp.uint32),
     )
 
@@ -71,40 +71,40 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, StepSt
   ) -> optax.OptState:
     return self.config.optimizer.init(eqx.filter(nets, eqx.is_array))
 
-  def _step(self, state: AgentState, env_step: EnvStep) -> AgentStep:
+  def _act(self, state: AgentState, env_step: EnvStep) -> ActionAndState:
     logits = jax.vmap(state.nets)(env_step.obs)
-    actions_key, key = jax.random.split(state.step.key)
+    actions_key, key = jax.random.split(state.actor.key)
     actions = jax.vmap(jax.random.categorical, in_axes=(None, 0))(actions_key, logits)
     log_probs = jax.vmap(jax.nn.log_softmax)(logits)
     log_probs_for_actions = jnp.take_along_axis(log_probs, actions[:, None], axis=1).squeeze(axis=1)
 
-    # This will silently be a no-op if step.t >= max_step_state_history.
+    # This will silently be a no-op if step.t >= max_actor_state_history.
     def set_batch(buf: jax.Array, newval: jax.Array):
-      return buf.at[:, state.step.t].set(newval)
+      return buf.at[:, state.actor.t].set(newval)
 
-    step = dataclasses.replace(
-      state.step,
+    actor_state = dataclasses.replace(
+      state.actor,
       chosen_action_log_probs=set_batch(
-        state.step.chosen_action_log_probs, log_probs_for_actions * state.step.mask
+        state.actor.chosen_action_log_probs, log_probs_for_actions * state.actor.mask
       ),
       key=key,
-      mask=state.step.mask & ~env_step.new_episode,
-      rewards=set_batch(state.step.rewards, env_step.reward * state.step.mask),
-      t=state.step.t + 1,
+      mask=state.actor.mask & ~env_step.new_episode,
+      rewards=set_batch(state.actor.rewards, env_step.reward * state.actor.mask),
+      t=state.actor.t + 1,
     )
-    return AgentStep(actions, step)
+    return ActionAndState(actions, actor_state)
 
   def _optimize_from_grads(self, state: AgentState, nets_grads: PyTree) -> AgentState:
     updates, opt_state = self.config.optimizer.update(nets_grads, state.opt)
     nets = eqx.apply_updates(state.nets, updates)
-    step = dataclasses.replace(
-      state.step,
-      chosen_action_log_probs=jnp.zeros_like(state.step.chosen_action_log_probs),
-      mask=jnp.ones_like(state.step.mask),
-      rewards=jnp.zeros_like(state.step.rewards),
-      t=jnp.zeros_like(state.step.t),
+    actor_state = dataclasses.replace(
+      state.actor,
+      chosen_action_log_probs=jnp.zeros_like(state.actor.chosen_action_log_probs),
+      mask=jnp.ones_like(state.actor.mask),
+      rewards=jnp.zeros_like(state.actor.rewards),
+      t=jnp.zeros_like(state.actor.t),
     )
-    return dataclasses.replace(state, nets=nets, opt=opt_state, step=step)
+    return dataclasses.replace(state, nets=nets, opt=opt_state, actor=actor_state)
 
   def _loss(self, state: AgentState) -> tuple[Scalar, Metrics]:
     def discounted_returns(carry, x):
@@ -116,8 +116,8 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, StepSt
       _, ys = jax.lax.scan(discounted_returns, init=jnp.array(0), xs=rewards, reverse=True)
       return ys
 
-    returns = vmap_discounted_returns(state.step.rewards)
-    return -jnp.mean(returns * state.step.chosen_action_log_probs), {}
+    returns = vmap_discounted_returns(state.actor.rewards)
+    return -jnp.mean(returns * state.actor.chosen_action_log_probs), {}
 
   def num_off_policy_optims_per_cycle(self) -> int:
     return 0
