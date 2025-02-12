@@ -12,14 +12,14 @@ One global queue: deque[Networks], which has maxlen 1 (can do 2 to avoid blockin
 Actor:
 * copy latest networks to actor device.
 * run actor cycle.
-* calls Agent.shard_actor_state(actor_state, sharding), copies trajectory and step state to update devices. append tuple(initial StepState, final StepStat, trajectory) to queue.
+* calls Agent.shard_actor_state(actor_state, sharding), copies trajectory and step state to update devices. append tuple(initial ActorState, final ActorState, trajectory) to queue.
 
 Later optimization: double buffering so we have two threads per actor, one that is stepping agent one that is stepping environment. Essentially doubles the number of actor. Doesn't actually complicate things too much.
 
-Main thread, does updates, everthing with pmap:
+Main thread, does learning, everthing with pmap:
 pops tuple(initial step state, final step state, trajectory)
 calls update_experience
-calls GymnasiumLoop._update().
+calls GymnasiumLoop._learn().
     1. Note: need to change update_experience to take initial StepState.
     2. Note: need to have some API for controlling how many times _update can run without blocking.
        Or is num_off_policy_optims_per_cycle() sufficent?

@@ -265,10 +265,9 @@ class GymnasiumLoop:
     self._metric_writer: MetricWriter = metric_writer
     self._observe_cycle = observe_cycle
     self._actor_only = actor_only
-    update = self._update
     if assert_no_recompile:
-      update = eqx.debug.assert_max_traces(update, max_traces=1)
-    self._update = eqx.filter_jit(update, donate="warn")
+      self._learn = eqx.debug.assert_max_traces(self._learn, max_traces=1)
+    self._learn = eqx.filter_jit(self._learn, donate="warn")
 
     if assert_no_recompile:
       self._actor_cycle_bookkeeping = eqx.debug.assert_max_traces(
@@ -282,14 +281,14 @@ class GymnasiumLoop:
       raise ValueError("On-policy training is not supported in GymnasiumLoop.")
 
     devices = devices or jax.local_devices()[0:1]
-    self._inference_device: jax.Device = devices[0]
-    self._update_device: jax.Device = devices[0]
+    self._actor_device: jax.Device = devices[0]
+    self._learner_device: jax.Device = devices[0]
     if len(devices) > 1:
-      self._inference_device = devices[0]
-      self._update_device = devices[1]
+      self._actor_device = devices[0]
+      self._learner_device = devices[1]
       if len(devices) > 2:
         _logger.warning(
-          "Multiple update devices are not supported yet. Using only the first device."
+          "Multiple learner devices are not supported yet. Using only the first device."
         )
 
   def reset_env(self) -> EnvStep:
@@ -345,9 +344,9 @@ class GymnasiumLoop:
 
     agent_state = eqx.nn.inference_mode(state.agent_state, value=self._actor_only)
     # everything needs to start on the update device
-    agent_state = _filter_device_put(agent_state, self._update_device)
-    env_step = _filter_device_put(self.reset_env(), self._update_device)
-    self._key = jax.device_put(self._key, self._update_device)
+    agent_state = _filter_device_put(agent_state, self._learner_device)
+    env_step = _filter_device_put(self.reset_env(), self._learner_device)
+    self._key = jax.device_put(self._key, self._learner_device)
 
     step_num_metric_start = state.step_num
     del state
@@ -357,7 +356,7 @@ class GymnasiumLoop:
       cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
 
     env_state = typing.cast(EnvState, None)
-    if self._inference_device != self._update_device:
+    if self._actor_device != self._learner_device:
       actor_thread = _ActorThread(
         self._actor_cycle,
         agent_state.actor,
@@ -365,8 +364,8 @@ class GymnasiumLoop:
         env_step,
         steps_per_cycle,
         self._key,
-        self._inference_device,
-        self._update_device,
+        self._actor_device,
+        self._learner_device,
       )
       actor_thread.start()
     else:
@@ -385,8 +384,8 @@ class GymnasiumLoop:
             env_step,
             steps_per_cycle,
             self._key,
-            self._inference_device,
-            self._update_device,
+            self._actor_device,
+            self._learner_device,
           )
           actor_thread.start()
       else:
@@ -399,10 +398,10 @@ class GymnasiumLoop:
       if self._actor_only:
         update_duration = 0
       else:
-        with jax.default_device(self._update_device):
+        with jax.default_device(self._learner_device):
           experience_state = self._agent.update_experience(agent_state, actor_result.trajectory)
           agent_state = dataclasses.replace(agent_state, experience=experience_state)
-          agent_state, metrics = self._update(agent_state, actor_result.metrics)
+          agent_state, metrics = self._learn(agent_state, actor_result.metrics)
           cycle_result = dataclasses.replace(actor_result, agent_state=agent_state, metrics=metrics)
         update_duration = time.monotonic() - cycle_start - actor_wait_duration
         if cycle_num == 1 and actor_wait_duration > 5 * update_duration:
@@ -438,7 +437,7 @@ class GymnasiumLoop:
       agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle
     )
 
-  def _off_policy_update(
+  def _off_policy_optim(
     self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], _
   ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
@@ -450,13 +449,13 @@ class GymnasiumLoop:
     agent_state = self._agent.optimize_from_grads(agent_state, grad)
     return agent_state, metrics
 
-  def _update(
+  def _learn(
     self,
     agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     metrics: ArrayMetrics,
   ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     agent_state, off_policy_metrics = filter_scan(
-      self._off_policy_update,
+      self._off_policy_optim,
       init=agent_state,
       xs=None,
       length=self._agent.num_off_policy_optims_per_cycle(),

@@ -132,11 +132,11 @@ class GymnaxLoop:
     self._observe_cycle = observe_cycle
     self._actor_only = actor_only
     self._devices = devices or jax.local_devices()[0:1]
-    _run_cycle_and_update = self._run_cycle_and_update
+    _run_cycle_and_update = self._act_and_learn
     # max_traces=2 because of https://github.com/patrick-kidger/equinox/issues/932
     if assert_no_recompile:
       _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=2)
-      self._run_cycle_and_update = eqx.filter_pmap(
+      self._act_and_learn = eqx.filter_pmap(
         _run_cycle_and_update,
         donate="warn",
         axis_name=self._PMAP_AXIS_NAME,
@@ -237,9 +237,7 @@ class GymnaxLoop:
         EnvState,
         jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_state),
       )
-      cycle_result = self._run_cycle_and_update(
-        agent_state, env_state, env_step, key, steps_per_cycle
-      )
+      cycle_result = self._act_and_learn(agent_state, env_state, env_step, key, steps_per_cycle)
 
       cycle_result_device_0 = jax.tree.map(
         lambda x: x[0] if isinstance(x, jax.Array) else x, cycle_result
@@ -269,7 +267,7 @@ class GymnaxLoop:
       agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle
     )
 
-  def _off_policy_update(
+  def _off_policy_optim(
     self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], _
   ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
@@ -282,7 +280,7 @@ class GymnaxLoop:
     agent_state = self._agent.optimize_from_grads(agent_state, nets_grad)
     return agent_state, metrics
 
-  def _run_cycle_and_update(
+  def _act_and_learn(
     self,
     agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     env_state: EnvState,
@@ -293,7 +291,7 @@ class GymnaxLoop:
     # this is a nested function so we don't have to pass self as first arg, since filter_grad
     # takes gradient with respect to the first arg.
     @eqx.filter_grad(has_aux=True)
-    def _run_cycle_and_loss_grad(
+    def _act_and_loss_grad(
       nets_yes_grad: PyTree,
       nets_no_grad: PyTree,
       other_agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
@@ -305,7 +303,7 @@ class GymnaxLoop:
       agent_state = dataclasses.replace(
         other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad)
       )
-      cycle_result = self._run_cycle(agent_state, env_state, env_step, num_steps, key)
+      cycle_result = self._actor_cycle(agent_state, env_state, env_step, num_steps, key)
       experience_state = self._agent.update_experience(
         cycle_result.agent_state, cycle_result.trajectory
       )
@@ -323,7 +321,7 @@ class GymnaxLoop:
     if not self._actor_only and not self._agent.num_off_policy_optims_per_cycle():
       # On-policy update. Calculate the gradient through the entire cycle.
       nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
-      nets_grad, cycle_result = _run_cycle_and_loss_grad(
+      nets_grad, cycle_result = _act_and_loss_grad(
         nets_yes_grad,
         nets_no_grad,
         dataclasses.replace(agent_state, nets=None),
@@ -337,7 +335,7 @@ class GymnaxLoop:
       cycle_result.metrics.update(grad_means)
       agent_state = self._agent.optimize_from_grads(cycle_result.agent_state, nets_grad)
     else:
-      cycle_result = self._run_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
+      cycle_result = self._actor_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
       agent_state = cycle_result.agent_state
       if not self._actor_only:
         experience_state = self._agent.update_experience(
@@ -348,7 +346,7 @@ class GymnaxLoop:
     metrics = cycle_result.metrics
     if not self._actor_only and self._agent.num_off_policy_optims_per_cycle():
       agent_state, off_policy_metrics = filter_scan(
-        self._off_policy_update,
+        self._off_policy_optim,
         init=agent_state,
         xs=None,
         length=self._agent.num_off_policy_optims_per_cycle(),
@@ -367,7 +365,7 @@ class GymnaxLoop:
       cycle_result.step_infos,
     )
 
-  def _run_cycle(
+  def _actor_cycle(
     self,
     agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     env_state: EnvState,
