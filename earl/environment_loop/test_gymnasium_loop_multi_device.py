@@ -71,4 +71,4 @@ def test_inference_update_different_devices(caplog):
   agent_state = dataclasses.replace(agent_state, nets=jax.numpy.ones((1,)))
   caplog.set_level(logging.WARNING)
   loop.run(agent_state, num_cycles, steps_per_cycle)
-  assert "inference is much slower than update" in caplog.text
+  assert "actor is much slower than update" in caplog.text

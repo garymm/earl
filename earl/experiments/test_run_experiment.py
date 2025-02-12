@@ -346,7 +346,7 @@ def test_run_experiment_closes_loops():
     key,
     metric_writer,
     observe_cycle,
-    inference: bool = False,
+    actor_only: bool = False,
     assert_no_recompile: bool = True,
     devices: list[jax.Device] | None = None,
   ):
@@ -358,11 +358,11 @@ def test_run_experiment_closes_loops():
       key,
       metric_writer,
       observe_cycle,
-      inference,
+      actor_only,
       assert_no_recompile,
       devices=devices,
     )
-    if inference:
+    if actor_only:
       eval_loop = loop
     else:
       train_loop = loop

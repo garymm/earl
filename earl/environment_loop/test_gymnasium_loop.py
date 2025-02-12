@@ -41,7 +41,7 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
   if not inference and not num_off_policy_updates:
     with pytest.raises(ValueError, match="On-policy training is not supported in GymnasiumLoop."):
       loop = GymnasiumLoop(
-        env, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=inference
+        env, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=inference
       )
     return
 
@@ -51,7 +51,7 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
     num_envs,
     next(key_gen),
     metric_writer=metric_writer,
-    inference=inference,
+    actor_only=inference,
     devices=jax.devices("cpu")[:1],
   )
   num_cycles = 2
@@ -106,7 +106,7 @@ def test_bad_args():
   agent = RandomAgent(env_info.action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
-    env, agent, num_envs, jax.random.PRNGKey(0), metric_writer=metric_writer, inference=True
+    env, agent, num_envs, jax.random.PRNGKey(0), metric_writer=metric_writer, actor_only=True
   )
   agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
   with pytest.raises(ValueError, match="num_cycles"):
@@ -147,7 +147,7 @@ def test_continuous_action_space():
   agent = RandomAgent(action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
-    env, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=True
+    env, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=True
   )
   num_cycles = 1
   steps_per_cycle = 1
@@ -180,7 +180,7 @@ def test_observe_cycle():
     num_envs,
     next(key_gen),
     metric_writer=metric_writer,
-    inference=True,
+    actor_only=True,
     observe_cycle=observe_cycle,
   )
   agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
@@ -209,7 +209,7 @@ def test_benchmark_gymnasium_inference():
     num_envs,
     next(key_gen),
     metric_writer=metric_writer,
-    inference=True,
+    actor_only=True,
     vectorization_mode="async",
   )
   assert isinstance(env_info.observation_space, Box)

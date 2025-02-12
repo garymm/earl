@@ -38,7 +38,7 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
     num_envs,
     next(key_gen),
     metric_writer=metric_writer,
-    inference=inference,
+    actor_only=inference,
   )
   num_cycles = 2
   steps_per_cycle = 10
@@ -126,7 +126,7 @@ def test_continuous_action_space():
   agent = RandomAgent(action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnaxLoop(
-    env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=True
+    env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=True
   )
   num_cycles = 1
   steps_per_cycle = 1
@@ -163,7 +163,7 @@ def test_observe_cycle():
     num_envs,
     next(key_gen),
     metric_writer=metric_writer,
-    inference=True,
+    actor_only=True,
     observe_cycle=observe_cycle,
   )
   loop.run(agent_state, num_cycles, steps_per_cycle)

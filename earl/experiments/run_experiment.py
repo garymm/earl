@@ -154,7 +154,7 @@ def _new_gymnasium_loop(
   key: PRNGKeyArray,
   metric_writer: MetricWriter,
   observe_cycle: ObserveCycle = no_op_observe_cycle,
-  inference: bool = False,
+  actor_only: bool = False,
   assert_no_recompile: bool = True,
   devices: list[jax.Device] | None = None,
 ) -> GymnasiumLoop:
@@ -165,7 +165,7 @@ def _new_gymnasium_loop(
     key,
     metric_writer,
     observe_cycle,
-    inference=inference,
+    actor_only=actor_only,
     assert_no_recompile=assert_no_recompile,
     devices=devices,
   )
@@ -266,7 +266,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
       eval_key,
       metric_writer=metric_writers.eval,
       observe_cycle=observe_cycles.eval,
-      inference=True,
+      actor_only=True,
     )
 
   eval_loop_state = None

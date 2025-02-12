@@ -116,11 +116,12 @@ def _filter_device_put(x: PyTree[typing.Any], device: jax.Device | None):
   return eqx.combine(dynamic, static)
 
 
-class _InferenceThread(threading.Thread):
+class _ActorThread(threading.Thread):
   def __init__(
     self,
-    target: typing.Callable[[AgentState, EnvStep, int, PRNGKeyArray], CycleResult],
-    agent_state: AgentState,
+    target: typing.Callable[[typing.Any, typing.Any, EnvStep, int, PRNGKeyArray], CycleResult],
+    actor_state: typing.Any,
+    nets: typing.Any,
     env_step: EnvStep,
     num_steps: int,
     key: PRNGKeyArray,
@@ -128,7 +129,7 @@ class _InferenceThread(threading.Thread):
     copy_back_to_device: jax.Device,
     fake_thread: bool = False,
   ):
-    """Initializes the _InferenceThread.
+    """Initializes the _ActorThread.
 
     Args:
         target: The target function to run.
@@ -143,7 +144,8 @@ class _InferenceThread(threading.Thread):
     """
     super().__init__()
     self._target = target
-    self._agent_state = agent_state
+    self._actor_state = actor_state
+    self._nets = nets
     self._env_step = env_step
     self._num_steps = num_steps
     self._key = key
@@ -153,16 +155,13 @@ class _InferenceThread(threading.Thread):
     self._fake_thread = fake_thread
 
   def run(self):
-    agent_state, env_step, num_steps, key = _filter_device_put(
-      (self._agent_state, self._env_step, self._num_steps, self._key), self._run_on_device
+    actor_state, nets, env_step, num_steps, key = _filter_device_put(
+      (self._actor_state, self._nets, self._env_step, self._num_steps, self._key),
+      self._run_on_device,
     )
     with jax.default_device(self._run_on_device):
-      self._result = self._target(agent_state, env_step, num_steps, key)
+      self._result = self._target(actor_state, nets, env_step, num_steps, key)
     assert self._result is not None
-    # don't copy the nets back to the update device
-    self._result = dataclasses.replace(
-      self._result, agent_state=dataclasses.replace(self._result.agent_state, nets=None)
-    )
     self._result = _filter_device_put(self._result, self._copy_back_to_device)
 
   def start(self):
@@ -204,11 +203,11 @@ class GymnasiumLoop:
 
   Runs an agent and a Gymnasium environment for a certain number of cycles.
   Each cycle is some (caller-specified) number of environment steps. It supports three modes:
-  * training=False: just environment steps, no agent updates. Useful for evaluation.
-  * training=True, agent.num_off_policy_optims_per_cycle() > 0: the specified number
+  * actor_only=True: just environment steps, no agent updates. Useful for evaluation.
+  * actor_only=False, agent.num_off_policy_optims_per_cycle() > 0: the specified number
     of off-policy updates per cycle. The gradient is calculated only for the Agent.loss() call,
     not the interaction with the environment.
-  * On-policy training is not supported (training=True, agent.num_off_policy_optims_per_cycle() = 0)
+  * On-policy training is not supported (agent.num_off_policy_optims_per_cycle()=0)
   """
 
   def __init__(
@@ -219,7 +218,7 @@ class GymnasiumLoop:
     key: PRNGKeyArray,
     metric_writer: MetricWriter,
     observe_cycle: ObserveCycle = no_op_observe_cycle,
-    inference: bool = False,
+    actor_only: bool = False,
     assert_no_recompile: bool = True,
     vectorization_mode: typing.Literal["sync", "async"] = "async",
     devices: typing.Sequence[jax.Device] | None = None,
@@ -234,7 +233,7 @@ class GymnasiumLoop:
         metric_writer: The metric writer to write metrics to.
         observe_cycle: A function that takes a CycleResult representing a final environment state
             and a trajectory of length steps_per_cycle and runs any custom logic on it.
-        inference: If False, agent.optimize_from_grads() will not be called.
+        actor_only: If True, agent.optimize_from_grads() will not be called.
         assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         vectorization_mode: Whether to create a synchronous or asynchronous vectorized environment
             from the provided Gymnasium environment.
@@ -265,21 +264,21 @@ class GymnasiumLoop:
     self._key = key
     self._metric_writer: MetricWriter = metric_writer
     self._observe_cycle = observe_cycle
-    self._inference_only = inference
+    self._actor_only = actor_only
     update = self._update
     if assert_no_recompile:
       update = eqx.debug.assert_max_traces(update, max_traces=1)
     self._update = eqx.filter_jit(update, donate="warn")
 
     if assert_no_recompile:
-      self._inference_cycle_bookkeeping = eqx.debug.assert_max_traces(
-        self._inference_cycle_bookkeeping, max_traces=1
+      self._actor_cycle_bookkeeping = eqx.debug.assert_max_traces(
+        self._actor_cycle_bookkeeping, max_traces=1
       )
-    self._inference_cycle_bookkeeping = eqx.filter_jit(
-      self._inference_cycle_bookkeeping, donate="warn-except-first"
+    self._actor_cycle_bookkeeping = eqx.filter_jit(
+      self._actor_cycle_bookkeeping, donate="warn-except-first"
     )
 
-    if not self._inference_only and not self._agent.num_off_policy_optims_per_cycle():
+    if not self._actor_only and not self._agent.num_off_policy_optims_per_cycle():
       raise ValueError("On-policy training is not supported in GymnasiumLoop.")
 
     devices = devices or jax.local_devices()[0:1]
@@ -324,8 +323,8 @@ class GymnasiumLoop:
             Callers can pass in an AgentState, which is equivalent to passing in a LoopState
             with the same agent_state and all other fields set to their default values.
             state.agent_state will be replaced with
-            `equinox.nn.inference_mode(agent_state, value=inference)` before running, where
-            `inference` is the value that was passed into GymnasiumLoop.__init__().
+            `equinox.nn.inference_mode(agent_state, value=actor_only)` before running, where
+            `actor_only` is the value that was passed into GymnasiumLoop.__init__().
         num_cycles: The number of cycles to run.
         steps_per_cycle: The number of steps to run in each cycle.
         print_progress: Whether to print progress to std out.
@@ -344,7 +343,7 @@ class GymnasiumLoop:
     if isinstance(state, AgentState):
       state = State(state)
 
-    agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference_only)
+    agent_state = eqx.nn.inference_mode(state.agent_state, value=self._actor_only)
     # everything needs to start on the update device
     agent_state = _filter_device_put(agent_state, self._update_device)
     env_step = _filter_device_put(self.reset_env(), self._update_device)
@@ -359,59 +358,57 @@ class GymnasiumLoop:
 
     env_state = typing.cast(EnvState, None)
     if self._inference_device != self._update_device:
-      inference_thread = _InferenceThread(
-        self._inference_cycle,
-        # avoid copying the unnecessary state to the inference device
-        dataclasses.replace(agent_state, experience=None, opt=None),
+      actor_thread = _ActorThread(
+        self._actor_cycle,
+        agent_state.actor,
+        agent_state.nets,
         env_step,
         steps_per_cycle,
         self._key,
         self._inference_device,
         self._update_device,
       )
-      inference_thread.start()
+      actor_thread.start()
     else:
-      inference_thread = None
-    inference_wait_duration = 0
+      actor_thread = None
+    actor_wait_duration = 0
     for cycle_num in cycles_iter:
       cycle_start = time.monotonic()
-      agent_state_for_inference = dataclasses.replace(agent_state, experience=None, opt=None)
-      if inference_thread:
-        inference_result = inference_thread.join_and_return()
-        inference_wait_duration = time.monotonic() - cycle_start
+      if actor_thread:
+        actor_result = actor_thread.join_and_return()
+        actor_wait_duration = time.monotonic() - cycle_start
         if cycle_num < num_cycles - 1:
-          inference_thread = _InferenceThread(
-            self._inference_cycle,
-            agent_state_for_inference,
+          actor_thread = _ActorThread(
+            self._actor_cycle,
+            agent_state.actor,
+            agent_state.nets,
             env_step,
             steps_per_cycle,
             self._key,
             self._inference_device,
             self._update_device,
           )
-          inference_thread.start()
+          actor_thread.start()
       else:
-        inference_result = self._inference_cycle(
-          agent_state_for_inference, env_step, steps_per_cycle, self._key
+        actor_result = self._actor_cycle(
+          agent_state.actor, agent_state.nets, env_step, steps_per_cycle, self._key
         )
-      agent_state = dataclasses.replace(agent_state, actor=inference_result.agent_state.actor)
-      cycle_result = dataclasses.replace(inference_result, agent_state=agent_state)
+      agent_state = dataclasses.replace(agent_state, actor=actor_result.agent_state)
+      cycle_result = dataclasses.replace(actor_result, agent_state=agent_state)
 
-      if self._inference_only:
+      if self._actor_only:
         update_duration = 0
       else:
         with jax.default_device(self._update_device):
-          experience_state = self._agent.update_experience(agent_state, inference_result.trajectory)
+          experience_state = self._agent.update_experience(agent_state, actor_result.trajectory)
           agent_state = dataclasses.replace(agent_state, experience=experience_state)
-          agent_state, metrics = self._update(agent_state, inference_result.metrics)
-          cycle_result = dataclasses.replace(
-            inference_result, agent_state=agent_state, metrics=metrics
-          )
-        update_duration = time.monotonic() - cycle_start - inference_wait_duration
-        if cycle_num == 1 and inference_wait_duration > 5 * update_duration:
+          agent_state, metrics = self._update(agent_state, actor_result.metrics)
+          cycle_result = dataclasses.replace(actor_result, agent_state=agent_state, metrics=metrics)
+        update_duration = time.monotonic() - cycle_start - actor_wait_duration
+        if cycle_num == 1 and actor_wait_duration > 5 * update_duration:
           _logger.warning(
-            "inference is much slower than update. inference duration: %fs, update duration: %fs",
-            inference_wait_duration,
+            "actor is much slower than update. actor duration: %fs, update duration: %fs",
+            actor_wait_duration,
             update_duration,
           )
 
@@ -429,7 +426,7 @@ class GymnasiumLoop:
 
       metrics_by_type = extract_metrics(cycle_result.metrics, observe_cycle_metrics)
       metrics_by_type.scalar[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
-      metrics_by_type.scalar[MetricKey.INFERENCE_WAIT_DURATION_SEC] = inference_wait_duration
+      metrics_by_type.scalar[MetricKey.INFERENCE_WAIT_DURATION_SEC] = actor_wait_duration
       metrics_by_type.scalar[MetricKey.UPDATE_DURATION_SEC] = update_duration
 
       step_num = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
@@ -470,9 +467,10 @@ class GymnasiumLoop:
 
     return agent_state, metrics
 
-  def _inference_cycle(
+  def _actor_cycle(
     self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
+    actor_state: typing.Any,
+    nets: typing.Any,
     env_step: EnvStep,
     num_steps: int,
     key: PRNGKeyArray,
@@ -482,11 +480,11 @@ class GymnasiumLoop:
     step_infos = []
 
     for _ in range(num_steps):
-      with nvtx_annotate("inference loop body"):
-        with nvtx_annotate("agent.step"):
+      with nvtx_annotate("actor loop body"):
+        with nvtx_annotate("agent.act"):
           # implicit copy of env_step to device
-          action_and_state = self._agent.act(agent_state, env_step)
-        agent_state = dataclasses.replace(agent_state, actor=action_and_state.state)
+          action_and_state = self._agent.act(actor_state, nets, env_step)
+        actor_state = action_and_state.state
 
         with nvtx_annotate("env.step"):
           obs, reward, done, trunc, info = self._env.step(np.array(action_and_state.action))
@@ -495,12 +493,13 @@ class GymnasiumLoop:
         trajectory.append(env_step)
         step_infos.append(info)
 
-    metrics, trajectory_stacked = self._inference_cycle_bookkeeping(trajectory=trajectory)
+    metrics, trajectory_stacked = self._actor_cycle_bookkeeping(trajectory=trajectory)
 
     with jax.default_device(jax.devices("cpu")[0]):
       step_infos_stacked = typing.cast(dict[typing.Any, typing.Any], _stack_leaves(step_infos))
+    # TODO: ugly to put the actor state where the full agent state is expected
     return CycleResult(
-      agent_state,
+      actor_state,
       # not really the env state in any meaningful way, but we need to pass something
       # valid to make this code more similar to GymnaxLoop.
       EnvState(time=num_steps),
@@ -511,7 +510,7 @@ class GymnasiumLoop:
       step_infos_stacked,
     )
 
-  def _inference_cycle_bookkeeping(self, trajectory: list[EnvStep]) -> tuple[ArrayMetrics, EnvStep]:
+  def _actor_cycle_bookkeeping(self, trajectory: list[EnvStep]) -> tuple[ArrayMetrics, EnvStep]:
     """Computes metrics."""
     trajectory_stacked = _stack_leaves(trajectory)
 

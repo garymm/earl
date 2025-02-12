@@ -71,26 +71,28 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, ActorS
   ) -> optax.OptState:
     return self.config.optimizer.init(eqx.filter(nets, eqx.is_array))
 
-  def _act(self, state: AgentState, env_step: EnvStep) -> ActionAndState:
-    logits = jax.vmap(state.nets)(env_step.obs)
-    actions_key, key = jax.random.split(state.actor.key)
+  def _act(
+    self, actor_state: ActorState, nets: eqx.nn.Sequential, env_step: EnvStep
+  ) -> ActionAndState:
+    logits = jax.vmap(nets)(env_step.obs)
+    actions_key, key = jax.random.split(actor_state.key)
     actions = jax.vmap(jax.random.categorical, in_axes=(None, 0))(actions_key, logits)
     log_probs = jax.vmap(jax.nn.log_softmax)(logits)
     log_probs_for_actions = jnp.take_along_axis(log_probs, actions[:, None], axis=1).squeeze(axis=1)
 
-    # This will silently be a no-op if step.t >= max_actor_state_history.
+    # This will silently be a no-op if actor_state.t >= max_actor_state_history.
     def set_batch(buf: jax.Array, newval: jax.Array):
-      return buf.at[:, state.actor.t].set(newval)
+      return buf.at[:, actor_state.t].set(newval)
 
     actor_state = dataclasses.replace(
-      state.actor,
+      actor_state,
       chosen_action_log_probs=set_batch(
-        state.actor.chosen_action_log_probs, log_probs_for_actions * state.actor.mask
+        actor_state.chosen_action_log_probs, log_probs_for_actions * actor_state.mask
       ),
       key=key,
-      mask=state.actor.mask & ~env_step.new_episode,
-      rewards=set_batch(state.actor.rewards, env_step.reward * state.actor.mask),
-      t=state.actor.t + 1,
+      mask=actor_state.mask & ~env_step.new_episode,
+      rewards=set_batch(actor_state.rewards, env_step.reward * actor_state.mask),
+      t=actor_state.t + 1,
     )
     return ActionAndState(actions, actor_state)
 

@@ -125,17 +125,16 @@ def env_info_from_gymnasium(env: GymnasiumEnv, num_envs: int) -> EnvInfo:
 def _act_jit(
   non_donated: tuple[
     EnvStep,
-    AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
+    _Networks,
     Callable[
-      [AgentState[_Networks, _OptState, _ExperienceState, _ActorState], EnvStep],
+      [_ActorState, _Networks, EnvStep],
       ActionAndState[_ActorState],
     ],
   ],
   actor_state: _ActorState,
 ) -> ActionAndState[_ActorState]:
-  env_step, state, act_fn = non_donated
-  state = replace(state, actor=actor_state)
-  return act_fn(state, env_step)
+  env_step, nets, act_fn = non_donated
+  return act_fn(actor_state, nets, env_step)
 
 
 @eqx.filter_jit(donate="all-except-first")
@@ -355,14 +354,11 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     """
 
   def act(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], env_step: EnvStep
+    self, actor_state: _ActorState, nets: _Networks, env_step: EnvStep
   ) -> ActionAndState[_ActorState]:
     """Selects a batch of actions and updates actor state.
 
     Sub-classes should override _act. This method is a wrapper that adds jit-compilation.
-
-    TODO: change interface to take in only _Networks and _ActorState, which will let us avoid copying
-    those when doing inference on a different device.
 
     Args:
         state: The current agent state. Donated, so callers should not access it after calling.
@@ -372,13 +368,12 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     Returns:
         AgentStep which contains the batch of actions and the updated step state.
     """
-    # we only want to donate state.actor
-    actor_state = state.actor
-    return _act_jit((env_step, replace(state, actor=None), self._act), actor_state)
+    # we only want to donate actor_state
+    return _act_jit((env_step, nets, self._act), actor_state)
 
   @abc.abstractmethod
   def _act(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], env_step: EnvStep
+    self, actor_state: _ActorState, nets: _Networks, env_step: EnvStep
   ) -> ActionAndState[_ActorState]:
     """Selects a batch of actions and updates actor state.
 

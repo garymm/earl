@@ -96,7 +96,7 @@ class GymnaxLoop:
     key: PRNGKeyArray,
     metric_writer: MetricWriter,
     observe_cycle: ObserveCycle = no_op_observe_cycle,
-    inference: bool = False,
+    actor_only: bool = False,
     assert_no_recompile: bool = True,
     devices: typing.Sequence[jax.Device] | None = None,
   ):
@@ -112,7 +112,7 @@ class GymnaxLoop:
         metric_writer: The metric writer to write metrics to.
         observe_cycle: A function that takes a CycleResult representing a final environment state
             and a trajectory of length steps_per_cycle and runs any custom logic on it.
-        inference: If False, agent.update_for_cycle() will not be called.
+        actor_only: If True, agent.update_for_cycle() will not be called.
         assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         devices: sequence of devices for data parallelism.
             Each device will run num_envs, and the gradients will be averaged across devices.
@@ -130,7 +130,7 @@ class GymnaxLoop:
     self._key = key
     self._metric_writer = metric_writer
     self._observe_cycle = observe_cycle
-    self._inference = inference
+    self._actor_only = actor_only
     self._devices = devices or jax.local_devices()[0:1]
     _run_cycle_and_update = self._run_cycle_and_update
     # max_traces=2 because of https://github.com/patrick-kidger/equinox/issues/932
@@ -182,8 +182,8 @@ class GymnaxLoop:
             Callers can pass in an AgentState, which is equivalent to passing in a LoopState
             with the same agent_state and all other fields set to their default values.
             state.agent_state will be replaced with
-            `equinox.nn.inference_mode(agent_state, value=inference)` before running, where
-            `inference` is the value that was passed into GymnaxLoop.__init__().
+            `equinox.nn.inference_mode(agent_state, value=actor_only)` before running, where
+            `actor_only` is the value that was passed into GymnaxLoop.__init__().
         num_cycles: The number of cycles to run.
         steps_per_cycle: The number of steps to run in each cycle.
         print_progress: Whether to print progress to std out.
@@ -205,7 +205,7 @@ class GymnaxLoop:
     if isinstance(state, AgentState):
       state = State(state)
 
-    agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference)
+    agent_state = eqx.nn.inference_mode(state.agent_state, value=self._actor_only)
     agent_state = self.replicate(agent_state)
 
     if state.env_state is None:
@@ -320,7 +320,7 @@ class GymnaxLoop:
         cycle_result, metrics=mutable_metrics, agent_state=agent_state
       )
 
-    if not self._inference and not self._agent.num_off_policy_optims_per_cycle():
+    if not self._actor_only and not self._agent.num_off_policy_optims_per_cycle():
       # On-policy update. Calculate the gradient through the entire cycle.
       nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
       nets_grad, cycle_result = _run_cycle_and_loss_grad(
@@ -339,14 +339,14 @@ class GymnaxLoop:
     else:
       cycle_result = self._run_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
       agent_state = cycle_result.agent_state
-      if not self._inference:
+      if not self._actor_only:
         experience_state = self._agent.update_experience(
           cycle_result.agent_state, cycle_result.trajectory
         )
         agent_state = dataclasses.replace(agent_state, experience=experience_state)
 
     metrics = cycle_result.metrics
-    if not self._inference and self._agent.num_off_policy_optims_per_cycle():
+    if not self._actor_only and self._agent.num_off_policy_optims_per_cycle():
       agent_state, off_policy_metrics = filter_scan(
         self._off_policy_update,
         init=agent_state,
@@ -380,9 +380,7 @@ class GymnaxLoop:
     def scan_body(
       inp: StepCarry[_ActorState], _
     ) -> tuple[StepCarry[_ActorState], tuple[EnvStep, dict[Any, Any]]]:
-      agent_state_for_step = dataclasses.replace(agent_state, actor=inp.actor_state)
-
-      action_and_state = self._agent.act(agent_state_for_step, inp.env_step)
+      action_and_state = self._agent.act(inp.actor_state, agent_state.nets, inp.env_step)
       action = action_and_state.action
       if isinstance(self._action_space, Discrete):
         one_hot_actions = jax.nn.one_hot(

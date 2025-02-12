@@ -42,12 +42,14 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
   def _new_experience_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> None:
     return None
 
-  def _act(self, state: AgentState, env_step: EnvStep) -> ActionAndState[ActorState]:
-    key, action_key = jax.random.split(state.actor.key)
+  def _act(
+    self, actor_state: ActorState, nets: None, env_step: EnvStep
+  ) -> ActionAndState[ActorState]:
+    key, action_key = jax.random.split(actor_state.key)
     num_envs = env_step.obs.shape[0]
     actions = jax.vmap(self._sample_action_space)(jax.random.split(action_key, num_envs))
     assert isinstance(actions, jax.Array)
-    return ActionAndState(actions, ActorState(key, state.actor.t + 1))
+    return ActionAndState(actions, ActorState(key, actor_state.t + 1))
 
   def _partition_for_grad(self, nets: None) -> tuple[None, None]:
     return None, None
