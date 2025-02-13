@@ -132,16 +132,15 @@ class GymnaxLoop:
     self._observe_cycle = observe_cycle
     self._actor_only = actor_only
     self._devices = devices or jax.local_devices()[0:1]
-    _run_cycle_and_update = self._act_and_learn
     # max_traces=2 because of https://github.com/patrick-kidger/equinox/issues/932
     if assert_no_recompile:
-      _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=2)
-      self._act_and_learn = eqx.filter_pmap(
-        _run_cycle_and_update,
-        donate="warn",
-        axis_name=self._PMAP_AXIS_NAME,
-        devices=self._devices,  # pyright: ignore[reportCallIssue]
-      )
+      self._act_and_learn = eqx.debug.assert_max_traces(self._act_and_learn, max_traces=2)
+    self._act_and_learn = eqx.filter_pmap(
+      self._act_and_learn,
+      donate="warn",
+      axis_name=self._PMAP_AXIS_NAME,
+      devices=self._devices,  # pyright: ignore[reportCallIssue]
+    )
 
   def reset_env(self) -> tuple[EnvState, EnvStep]:
     """Resets the environment.
