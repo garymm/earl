@@ -4,10 +4,11 @@
 
 One global queue
  deque[tuple(initial actor state, final actor state, trajectory)]
-Question: what should maxlen be? 1? or 2 to allow non-blocking pop and push?
+Question: How do we track if maxlen is being hit and experience is lost?
 
 
-One global queue: deque[Networks], which has maxlen 1 (can do 2 to avoid blocking at the cost of more memory). Basically the staging area for the networks to be used on the next actor cycle.
+A dict from actor device to networks. Basically the staging area for the networks to be used on the next actor cycle.
+
 
 Actor:
 * copy latest networks to actor device.

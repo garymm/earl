@@ -3,9 +3,11 @@ import copy
 import dataclasses
 import logging
 import os
+import queue
 import threading
 import time
 import typing
+from collections.abc import Mapping
 
 import equinox as eqx
 import jax
@@ -34,6 +36,7 @@ except ImportError:
 from earl.core import (
   Agent,
   AgentState,
+  ConflictingMetricError,
   EnvStep,
   _ActorState,
   _ExperienceState,
@@ -61,6 +64,11 @@ from earl.utils.eqx_filter import filter_scan
 _logger = logging.getLogger(__name__)
 
 
+class _ActorExperience(typing.NamedTuple, typing.Generic[_ActorState]):
+  actor_state_pre: _ActorState
+  cycle_result: CycleResult
+
+
 # Cannot donate all because when stacking leaves for the trajectory
 # because we still need the final carry to be on the GPU.
 @eqx.filter_jit(donate="all")
@@ -77,7 +85,11 @@ def _copy_pytree(pytree: PyTree) -> PyTree:
 
 @eqx.filter_grad(has_aux=True)
 def _loss_for_cycle_grad(
-  nets_yes_grad, nets_no_grad, other_agent_state, agent: Agent
+  nets_yes_grad,
+  nets_no_grad,
+  other_agent_state,
+  agent: Agent,
+  check_metrics: typing.Callable[[Mapping], None],
 ) -> tuple[Scalar, ArrayMetrics]:
   # this is a free function so we don't have to pass self as first arg, since filter_grad
   # takes gradient with respect to the first arg.
@@ -85,7 +97,7 @@ def _loss_for_cycle_grad(
     other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad)
   )
   loss, metrics = agent.loss(agent_state)
-  raise_if_metric_conflicts(metrics)
+  check_metrics(metrics)
   # inside jit, return values are guaranteed to be arrays
   mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
   mutable_metrics[MetricKey.LOSS] = loss
@@ -117,64 +129,74 @@ def _filter_device_put(x: PyTree[typing.Any], device: jax.Device | None):
 
 
 class _ActorThread(threading.Thread):
+  STOP_SIGNAL = object()
+
   def __init__(
     self,
-    target: typing.Callable[[typing.Any, typing.Any, EnvStep, int, PRNGKeyArray], CycleResult],
+    loop: "GymnasiumLoop",
     actor_state: typing.Any,
-    nets: typing.Any,
     env_step: EnvStep,
     num_steps: int,
     key: PRNGKeyArray,
     run_on_device: jax.Device,
-    copy_back_to_device: jax.Device,
+    result_device: jax.Device,
     fake_thread: bool = False,
   ):
     """Initializes the _ActorThread.
 
     Args:
-        target: The target function to run.
-        agent_state: The agent state to run the target function on.
+        loop: The GymnasiumLoop that owns this thread.
+        actor_state: The initial agent state to use.
         env_step: The environment step to run the target function on.
-        num_steps: The number of steps to run the target function on.
+        num_steps: The number of steps for the actor cycle.
         key: The PRNG key to run the target function on.
         run_on_device: The device to run the target function on.
-        copy_back_to_device: The device to copy the result back to.
+        result_device: The device to copy the result to.
         fake_thread: Whether to fake the thread.
            Python debugger can't handle threads, so when debugging this can be very helpful.
     """
     super().__init__()
-    self._target = target
-    self._actor_state = actor_state
-    self._nets = nets
-    self._env_step = env_step
+    self._loop = loop
+    self._actor_state = _filter_device_put(actor_state, run_on_device)
+    self._env_step = _filter_device_put(env_step, run_on_device)
     self._num_steps = num_steps
-    self._key = key
-    self._result: CycleResult | None = None
+    self._key = _filter_device_put(key, run_on_device)
     self._run_on_device = run_on_device
-    self._copy_back_to_device = copy_back_to_device
+    self._result_device = result_device
     self._fake_thread = fake_thread
 
   def run(self):
-    actor_state, nets, env_step, num_steps, key = _filter_device_put(
-      (self._actor_state, self._nets, self._env_step, self._num_steps, self._key),
-      self._run_on_device,
-    )
-    with jax.default_device(self._run_on_device):
-      self._result = self._target(actor_state, nets, env_step, num_steps, key)
-    assert self._result is not None
-    self._result = _filter_device_put(self._result, self._copy_back_to_device)
+    while True:
+      with self._loop._networks_for_actor_lock:
+        nets = self._loop._networks_for_actor[self._run_on_device]
+      if nets is self.STOP_SIGNAL:
+        _logger.debug("stopping actor on device %s", self._run_on_device)
+        break
+      actor_state_pre = copy.deepcopy(self._actor_state)
+      with jax.default_device(self._run_on_device):
+        cycle_result = self._loop._actor_cycle(
+          self._actor_state, nets, self._env_step, self._num_steps, self._key
+        )
+      self._actor_state, self._env_step, self._key = (
+        cycle_result.agent_state,
+        cycle_result.env_step,
+        cycle_result.key,
+      )
+      if self._result_device == self._run_on_device:
+        cycle_result = dataclasses.replace(
+          cycle_result, agent_state=copy.deepcopy(self._actor_state)
+        )
+      experience = _ActorExperience(actor_state_pre=actor_state_pre, cycle_result=cycle_result)
+      # TODO: support multiple learner devices
+      self._loop._experience_q.put(_filter_device_put(experience, self._result_device))
+      if self._fake_thread:
+        break
 
   def start(self):
     if self._fake_thread:
       self.run()
     else:
       super().start()
-
-  def join_and_return(self) -> CycleResult:
-    if not self._fake_thread:
-      self.join()
-    assert self._result is not None
-    return self._result
 
 
 @contextlib.contextmanager
@@ -291,6 +313,12 @@ class GymnasiumLoop:
           "Multiple learner devices are not supported yet. Using only the first device."
         )
 
+    # TODO: maxsize=len(self._actor_devices)
+    self._experience_q: queue.Queue[_ActorExperience] = queue.Queue(maxsize=1)
+    self._networks_for_actor: dict[jax.Device, typing.Any] = {}
+    self._networks_for_actor_lock = threading.Lock()
+    self._actor_threads: list[_ActorThread] = []
+
   def reset_env(self) -> EnvStep:
     """Resets the environment.
 
@@ -343,10 +371,14 @@ class GymnasiumLoop:
       state = State(state)
 
     agent_state = eqx.nn.inference_mode(state.agent_state, value=self._actor_only)
-    # everything needs to start on the update device
+    # everything needs to start on the learner device
     agent_state = _filter_device_put(agent_state, self._learner_device)
     env_step = _filter_device_put(self.reset_env(), self._learner_device)
     self._key = jax.device_put(self._key, self._learner_device)
+    # TODO: do it for all actor devices
+    self._networks_for_actor[self._actor_device] = _filter_device_put(
+      agent_state.nets, self._actor_device
+    )
 
     step_num_metric_start = state.step_num
     del state
@@ -356,83 +388,77 @@ class GymnasiumLoop:
       cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
 
     env_state = typing.cast(EnvState, None)
-    if self._actor_device != self._learner_device:
-      actor_thread = _ActorThread(
-        self._actor_cycle,
-        agent_state.actor,
-        agent_state.nets,
-        env_step,
-        steps_per_cycle,
-        self._key,
-        self._actor_device,
-        self._learner_device,
-      )
-      actor_thread.start()
-    else:
-      actor_thread = None
+    actor_thread = _ActorThread(
+      self,
+      agent_state.actor,
+      env_step,
+      steps_per_cycle,
+      self._key,
+      self._actor_device,
+      self._learner_device,
+      fake_thread=False,  # TODO: remove
+    )
+    actor_thread.start()
+    self._actor_threads = [actor_thread]
     actor_wait_duration = 0
     for cycle_num in cycles_iter:
       cycle_start = time.monotonic()
-      if actor_thread:
-        actor_result = actor_thread.join_and_return()
-        actor_wait_duration = time.monotonic() - cycle_start
-        if cycle_num < num_cycles - 1:
-          actor_thread = _ActorThread(
-            self._actor_cycle,
-            agent_state.actor,
-            agent_state.nets,
-            env_step,
-            steps_per_cycle,
-            self._key,
-            self._actor_device,
-            self._learner_device,
-          )
-          actor_thread.start()
-      else:
-        actor_result = self._actor_cycle(
-          agent_state.actor, agent_state.nets, env_step, steps_per_cycle, self._key
-        )
-      agent_state = dataclasses.replace(agent_state, actor=actor_result.agent_state)
-      cycle_result = dataclasses.replace(actor_result, agent_state=agent_state)
+      actor_experiences = [self._experience_q.get()]
+      actor_wait_duration = time.monotonic() - cycle_start
+      while True:
+        try:
+          actor_experiences.append(self._experience_q.get_nowait())
+        except queue.Empty:
+          break
 
+      agent_state = dataclasses.replace(
+        agent_state, actor=actor_experiences[-1].cycle_result.agent_state
+      )
+      cycle_result = actor_experiences[-1].cycle_result
       if self._actor_only:
-        update_duration = 0
+        learn_duration = 0
+        metrics = cycle_result.metrics
       else:
         with jax.default_device(self._learner_device):
-          experience_state = self._agent.update_experience(agent_state, actor_result.trajectory)
-          agent_state = dataclasses.replace(agent_state, experience=experience_state)
-          agent_state, metrics = self._learn(agent_state, actor_result.metrics)
-          cycle_result = dataclasses.replace(actor_result, agent_state=agent_state, metrics=metrics)
-        update_duration = time.monotonic() - cycle_start - actor_wait_duration
-        if cycle_num == 1 and actor_wait_duration > 5 * update_duration:
+          while actor_experiences:
+            actor_experience = actor_experiences.pop()
+            # TODO: do this in parallel across learner devices
+            experience_state = self._agent.update_experience(
+              agent_state, actor_experience.cycle_result.trajectory
+            )
+            agent_state = dataclasses.replace(agent_state, experience=experience_state)
+          del actor_experiences
+          # TODO: merge metrics from all actor experiences
+          agent_state, metrics = self._learn(agent_state, cycle_result.metrics)
+        learn_duration = time.monotonic() - cycle_start - actor_wait_duration
+        if cycle_num == 1 and actor_wait_duration > 5 * learn_duration:
           _logger.warning(
-            "actor is much slower than update. actor duration: %fs, update duration: %fs",
+            "actors much slower than learning. actor wait duration: %fs, learn duration: %fs",
             actor_wait_duration,
-            update_duration,
+            learn_duration,
           )
-
-      env_state, env_step, self._key = (
-        cycle_result.env_state,
-        cycle_result.env_step,
-        cycle_result.key,
-      )
+        with self._networks_for_actor_lock:
+          for device in self._networks_for_actor:
+            self._networks_for_actor[device] = _filter_device_put(agent_state.nets, device)
 
       observe_cycle_metrics = self._observe_cycle(cycle_result)
+
       # Could potentially be very slow if there are lots
       # of metrics to compare, so only do it once.
       if cycle_num == 0:
-        raise_if_metric_conflicts(observe_cycle_metrics)
+        self._raise_if_metric_conflicts(observe_cycle_metrics)
 
-      metrics_by_type = extract_metrics(cycle_result.metrics, observe_cycle_metrics)
+      metrics_by_type = extract_metrics(metrics, observe_cycle_metrics)
       metrics_by_type.scalar[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
-      metrics_by_type.scalar[MetricKey.INFERENCE_WAIT_DURATION_SEC] = actor_wait_duration
-      metrics_by_type.scalar[MetricKey.UPDATE_DURATION_SEC] = update_duration
+      metrics_by_type.scalar[MetricKey.ACTOR_WAIT_DURATION_SEC] = actor_wait_duration
+      metrics_by_type.scalar[MetricKey.LEARN_DURATION_SEC] = learn_duration
 
       step_num = step_num_metric_start + (cycle_num + 1) * steps_per_cycle
       self._metric_writer.write_scalars(step_num, metrics_by_type.scalar)
       self._metric_writer.write_images(step_num, metrics_by_type.image)
       self._metric_writer.write_videos(step_num, metrics_by_type.video)
 
+    self._stop_actor_threads()
     return Result(
       agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle
     )
@@ -442,7 +468,11 @@ class GymnasiumLoop:
   ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
     grad, metrics = _loss_for_cycle_grad(
-      nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
+      nets_yes_grad,
+      nets_no_grad,
+      dataclasses.replace(agent_state, nets=None),
+      self._agent,
+      self._raise_if_metric_conflicts,
     )
     grad_means = pytree_leaf_means(grad, "grad_mean")
     metrics.update(grad_means)
@@ -556,7 +586,26 @@ class GymnasiumLoop:
 
     return metrics, trajectory_stacked
 
+  def _stop_actor_threads(self):
+    with self._networks_for_actor_lock:
+      for device in self._networks_for_actor:
+        self._networks_for_actor[device] = _ActorThread.STOP_SIGNAL
+    while any(thread.is_alive() for thread in self._actor_threads):
+      try:
+        self._experience_q.get_nowait()
+      except queue.Empty:
+        time.sleep(0.1)
+    self._actor_threads = []
+
+  def _raise_if_metric_conflicts(self, metrics: Mapping):
+    try:
+      raise_if_metric_conflicts(metrics)
+    except ConflictingMetricError:
+      self.close()
+      raise
+
   def close(self):
+    self._stop_actor_threads()
     self._env.close()
 
   def replicate(self, agent_state: AgentState) -> AgentState:
