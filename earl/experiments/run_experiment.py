@@ -299,7 +299,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
       )
 
   if checkpoint_manager:
-    checkpoint_manager.wait_until_finished()
+    checkpoint_manager.close()
 
   train_loop.close()
   if eval_loop:
