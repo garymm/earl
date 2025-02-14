@@ -31,13 +31,13 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
 
   _sample_action_space: Callable
   _num_off_policy_updates: int
-  _prng_metric_key: str = "prng"
+  _opt_count_metric_key: str = "opt_count"
 
   def _new_actor_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> ActorState:
     return ActorState(key, jnp.zeros((1,), dtype=jnp.uint32))
 
   def _new_opt_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> OptState:
-    return OptState(jnp.zeros((1,), dtype=jnp.uint32))
+    return OptState(jnp.zeros((), dtype=jnp.uint32))
 
   def _new_experience_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> None:
     return None
@@ -54,11 +54,10 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
   def _partition_for_grad(self, nets: None) -> tuple[None, None]:
     return None, None
 
-  def _loss(self, state: AgentState) -> tuple[Scalar, Metrics]:
-    return jnp.array(0.0), {
-      # metrics need to be scalars, so take elem 0.
-      self._prng_metric_key: state.actor.key[0],
-    }
+  def _loss(
+    self, nets: None, opt_state: OptState, experience_state: None
+  ) -> tuple[Scalar, Metrics]:
+    return jnp.array(0.0), {self._opt_count_metric_key: opt_state.opt_count}
 
   def _optimize_from_grads(self, state: AgentState, nets_grads: PyTree) -> AgentState:
     assert state.opt is not None

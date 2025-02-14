@@ -44,14 +44,12 @@ from earl.utils.eqx_filter import filter_scan
 
 @eqx.filter_grad(has_aux=True)
 def _loss_for_cycle_grad(
-  nets_yes_grad, nets_no_grad, other_agent_state, agent: Agent
+  nets_yes_grad, nets_no_grad, opt_state, experience_state, agent: Agent
 ) -> tuple[Scalar, ArrayMetrics]:
   # this is a free function so we don't have to pass self as first arg, since filter_grad
   # takes gradient with respect to the first arg.
-  agent_state = dataclasses.replace(
-    other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad)
-  )
-  loss, metrics = agent.loss(agent_state)
+  nets = eqx.combine(nets_yes_grad, nets_no_grad)
+  loss, metrics = agent.loss(nets, opt_state, experience_state)
   raise_if_metric_conflicts(metrics)
   # inside jit, return values are guaranteed to be arrays
   mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
@@ -272,7 +270,7 @@ class GymnaxLoop:
   ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
     nets_grad, metrics = _loss_for_cycle_grad(
-      nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
+      nets_yes_grad, nets_no_grad, agent_state.opt, agent_state.experience, self._agent
     )
     nets_grad = jax.lax.pmean(nets_grad, axis_name=self._PMAP_AXIS_NAME)
     grad_means = pytree_leaf_means(nets_grad, "grad_mean")
@@ -312,7 +310,7 @@ class GymnaxLoop:
         cycle_result.trajectory,
       )
       agent_state = dataclasses.replace(cycle_result.agent_state, experience=experience_state)
-      loss, metrics = self._agent.loss(agent_state)
+      loss, metrics = self._agent.loss(agent_state.nets, agent_state.opt, agent_state.experience)
       raise_if_metric_conflicts(metrics)
       # inside jit, return values are guaranteed to be arrays
       mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))

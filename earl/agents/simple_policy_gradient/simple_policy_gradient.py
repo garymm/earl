@@ -19,6 +19,11 @@ class ActorState(eqx.Module):
   t: jax.Array
 
 
+class ExperienceState(eqx.Module):
+  rewards: jax.Array
+  chosen_action_log_probs: jax.Array
+
+
 @dataclasses.dataclass(eq=True, frozen=True)
 class Config:
   max_actor_state_history: int
@@ -35,10 +40,10 @@ def make_networks(layer_dims: list[int], key: PRNGKeyArray) -> eqx.nn.Sequential
   return eqx.nn.Sequential(layers)
 
 
-AgentState = CoreAgentState[eqx.nn.Sequential, optax.OptState, None, ActorState]
+AgentState = CoreAgentState[eqx.nn.Sequential, optax.OptState, ExperienceState, ActorState]
 
 
-class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, ActorState]):
+class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceState, ActorState]):
   """Simple policy gradient agent.
 
   Based on https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html.
@@ -63,8 +68,11 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, ActorS
 
   def _new_experience_state(
     self, nets: eqx.nn.Sequential, env_info: EnvInfo, key: PRNGKeyArray
-  ) -> None:
-    return None
+  ) -> ExperienceState:
+    return ExperienceState(
+      rewards=jnp.zeros((env_info.num_envs, self.config.max_actor_state_history)),
+      chosen_action_log_probs=jnp.zeros((env_info.num_envs, self.config.max_actor_state_history)),
+    )
 
   def _new_opt_state(
     self, nets: eqx.nn.Sequential, env_info: EnvInfo, key: PRNGKeyArray
@@ -108,7 +116,9 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, ActorS
     )
     return dataclasses.replace(state, nets=nets, opt=opt_state, actor=actor_state)
 
-  def _loss(self, state: AgentState) -> tuple[Scalar, Metrics]:
+  def _loss(
+    self, nets: eqx.nn.Sequential, opt_state: optax.OptState, experience_state: ExperienceState
+  ) -> tuple[Scalar, Metrics]:
     def discounted_returns(carry, x):
       carry = x + self.config.discount * carry
       return carry, carry
@@ -118,17 +128,20 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, ActorS
       _, ys = jax.lax.scan(discounted_returns, init=jnp.array(0), xs=rewards, reverse=True)
       return ys
 
-    returns = vmap_discounted_returns(state.actor.rewards)
-    return -jnp.mean(returns * state.actor.chosen_action_log_probs), {}
+    returns = vmap_discounted_returns(experience_state.rewards)
+    return -jnp.mean(returns * experience_state.chosen_action_log_probs), {}
 
   def num_off_policy_optims_per_cycle(self) -> int:
     return 0
 
   def _update_experience(
     self,
-    experience_state: None,
+    experience_state: ExperienceState,
     actor_state_pre: ActorState,
     actor_state_post: ActorState,
     trajectory: EnvStep,
-  ) -> None:
-    return None
+  ) -> ExperienceState:
+    return ExperienceState(
+      rewards=actor_state_post.rewards,
+      chosen_action_log_probs=actor_state_post.chosen_action_log_probs,
+    )

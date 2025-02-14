@@ -87,16 +87,15 @@ def _copy_pytree(pytree: PyTree) -> PyTree:
 def _loss_for_cycle_grad(
   nets_yes_grad,
   nets_no_grad,
-  other_agent_state,
+  opt_state,
+  experience_state,
   agent: Agent,
   check_metrics: typing.Callable[[Mapping], None],
 ) -> tuple[Scalar, ArrayMetrics]:
   # this is a free function so we don't have to pass self as first arg, since filter_grad
   # takes gradient with respect to the first arg.
-  agent_state = dataclasses.replace(
-    other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad)
-  )
-  loss, metrics = agent.loss(agent_state)
+  nets = eqx.combine(nets_yes_grad, nets_no_grad)
+  loss, metrics = agent.loss(nets, opt_state, experience_state)
   check_metrics(metrics)
   # inside jit, return values are guaranteed to be arrays
   mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
@@ -500,7 +499,8 @@ class GymnasiumLoop:
     grad, metrics = _loss_for_cycle_grad(
       nets_yes_grad,
       nets_no_grad,
-      dataclasses.replace(agent_state, nets=None),
+      agent_state.opt,
+      agent_state.experience,
       self._agent,
       self._raise_if_metric_conflicts,
     )
