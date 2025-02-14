@@ -506,8 +506,8 @@ class GymnasiumLoop:
     )
     grad_means = pytree_leaf_means(grad, "grad_mean")
     metrics.update(grad_means)
-    agent_state = self._agent.optimize_from_grads(agent_state, grad)
-    return agent_state, metrics
+    nets, opt_state = self._agent.optimize_from_grads(agent_state.nets, agent_state.opt, grad)
+    return dataclasses.replace(agent_state, nets=nets, opt=opt_state), metrics
 
   def _learn(
     self,

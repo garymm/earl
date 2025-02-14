@@ -123,31 +123,25 @@ def env_info_from_gymnasium(env: GymnasiumEnv, num_envs: int) -> EnvInfo:
 # functions are not reconstructed on each call.
 @eqx.filter_jit(donate="all-except-first")
 def _act_jit(
-  non_donated: tuple[
-    EnvStep,
-    _Networks,
-    Callable[
-      [_ActorState, _Networks, EnvStep],
-      ActionAndState[_ActorState],
-    ],
-  ],
+  non_donated: tuple[EnvStep, _Networks],
   actor_state: _ActorState,
+  act: Callable[[_ActorState, _Networks, EnvStep], ActionAndState[_ActorState]],
 ) -> ActionAndState[_ActorState]:
-  env_step, nets, act_fn = non_donated
-  return act_fn(actor_state, nets, env_step)
+  env_step, nets = non_donated
+  return act(actor_state, nets, env_step)
 
 
 @eqx.filter_jit(donate="all-except-first")
 def _update_experience_jit(
-  non_donated: tuple[
-    EnvStep,
-    _ActorState,
-    Callable[[_ExperienceState, _ActorState, _ActorState, EnvStep], _ExperienceState],
-  ],
+  non_donated: tuple[EnvStep, _ActorState],
   experience: _ExperienceState,
   actor_state_pre: _ActorState,
+  update_experience: Callable[
+    [_ExperienceState, _ActorState, _ActorState, EnvStep],
+    _ExperienceState,
+  ],
 ) -> _ExperienceState:
-  trajectory, actor_state_post, update_experience = non_donated
+  trajectory, actor_state_post = non_donated
   return update_experience(experience, actor_state_pre, actor_state_post, trajectory)
 
 
@@ -160,14 +154,12 @@ def _partition_for_grad_jit(
 
 @eqx.filter_jit(donate="all")
 def _optimize_from_grads_jit(
-  state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
+  nets: _Networks,
+  opt_state: _OptState,
   nets_grads: PyTree,
-  optimize_from_grads: Callable[
-    [AgentState[_Networks, _OptState, _ExperienceState, _ActorState], PyTree],
-    AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
-  ],
+  optimize_from_grads: Callable[[_Networks, _OptState, PyTree], tuple[_Networks, _OptState]],
 ):
-  return optimize_from_grads(state, nets_grads)
+  return optimize_from_grads(nets, opt_state, nets_grads)
 
 
 @eqx.filter_jit()
@@ -370,7 +362,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
         AgentStep which contains the batch of actions and the updated step state.
     """
     # we only want to donate actor_state
-    return _act_jit((env_step, nets, self._act), actor_state)
+    return _act_jit((env_step, nets), actor_state, self._act)
 
   @abc.abstractmethod
   def _act(
@@ -406,7 +398,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
         The updated experience.
     """
     return _update_experience_jit(
-      (trajectory, actor_state_post, self._update_experience), experience_state, actor_state_pre
+      (trajectory, actor_state_post), experience_state, actor_state_pre, self._update_experience
     )
 
   @abc.abstractmethod
@@ -467,24 +459,25 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     """
 
   def optimize_from_grads(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], nets_grads: PyTree
-  ) -> AgentState[_Networks, _OptState, _ExperienceState, _ActorState]:
+    self, nets: _Networks, opt_state: _OptState, nets_grads: PyTree
+  ) -> tuple[_Networks, _OptState]:
     """Optimizes agent state based on gradients of the losses returned by self.loss().
 
     Sub-classes should override _optimize_from_grads. This method is a wrapper that adds
     jit-compilation.
 
     Args:
-        state: The current agent state. Donated, so callers should not access it after calling.
+        nets: The current network state. Donated, so callers should not access it after calling.
+        opt_state: The current optimizer state. Donated, so callers should not access it after calling.
         nets_grads is the gradient of the loss w.r.t. the agent's networks. Donated,
             so callers should not access it after calling.
     """
-    return _optimize_from_grads_jit(state, nets_grads, self._optimize_from_grads)
+    return _optimize_from_grads_jit(nets, opt_state, nets_grads, self._optimize_from_grads)
 
   @abc.abstractmethod
   def _optimize_from_grads(
-    self, state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], nets_grads: PyTree
-  ) -> AgentState[_Networks, _OptState, _ExperienceState, _ActorState]:
+    self, nets: _Networks, opt_state: _OptState, nets_grads: PyTree
+  ) -> tuple[_Networks, _OptState]:
     """Optimizes agent state based on gradients of the losses returned by self._loss().
 
     Must be jit-compatible.

@@ -104,9 +104,12 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceSt
     )
     return ActionAndState(actions, actor_state)
 
-  def _optimize_from_grads(self, state: AgentState, nets_grads: PyTree) -> AgentState:
-    updates, opt_state = self.config.optimizer.update(nets_grads, state.opt)
-    nets = eqx.apply_updates(state.nets, updates)
+  def _optimize_from_grads(
+    self, nets: eqx.nn.Sequential, opt_state: optax.OptState, nets_grads: PyTree
+  ) -> tuple[eqx.nn.Sequential, optax.OptState]:
+    updates, opt_state = self.config.optimizer.update(nets_grads, opt_state)
+    nets = eqx.apply_updates(nets, updates)
+    # TODO: figure out where to reset actor state
     actor_state = dataclasses.replace(
       state.actor,
       chosen_action_log_probs=jnp.zeros_like(state.actor.chosen_action_log_probs),
@@ -114,7 +117,7 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceSt
       rewards=jnp.zeros_like(state.actor.rewards),
       t=jnp.zeros_like(state.actor.t),
     )
-    return dataclasses.replace(state, nets=nets, opt=opt_state, actor=actor_state)
+    return nets, opt_state
 
   def _loss(
     self, nets: eqx.nn.Sequential, opt_state: optax.OptState, experience_state: ExperienceState

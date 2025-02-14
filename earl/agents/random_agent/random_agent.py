@@ -1,4 +1,3 @@
-import dataclasses
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -59,9 +58,11 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
   ) -> tuple[Scalar, Metrics]:
     return jnp.array(0.0), {self._opt_count_metric_key: opt_state.opt_count}
 
-  def _optimize_from_grads(self, state: AgentState, nets_grads: PyTree) -> AgentState:
-    assert state.opt is not None
-    return dataclasses.replace(state, opt=OptState(state.opt.opt_count + 1))
+  def _optimize_from_grads(
+    self, nets: None, opt_state: OptState, nets_grads: PyTree
+  ) -> tuple[None, OptState]:
+    assert opt_state.opt_count is not None
+    return None, OptState(opt_count=opt_state.opt_count + 1)
 
   def _update_experience(
     self,

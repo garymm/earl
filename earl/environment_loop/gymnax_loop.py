@@ -275,8 +275,8 @@ class GymnaxLoop:
     nets_grad = jax.lax.pmean(nets_grad, axis_name=self._PMAP_AXIS_NAME)
     grad_means = pytree_leaf_means(nets_grad, "grad_mean")
     metrics.update(grad_means)
-    agent_state = self._agent.optimize_from_grads(agent_state, nets_grad)
-    return agent_state, metrics
+    nets, opt_state = self._agent.optimize_from_grads(agent_state.nets, agent_state.opt, nets_grad)
+    return dataclasses.replace(agent_state, nets=nets, opt=opt_state), metrics
 
   def _act_and_learn(
     self,
@@ -335,7 +335,10 @@ class GymnaxLoop:
       nets_grad = jax.lax.pmean(nets_grad, axis_name=self._PMAP_AXIS_NAME)
       grad_means = pytree_leaf_means(nets_grad, "grad_mean")
       cycle_result.metrics.update(grad_means)
-      agent_state = self._agent.optimize_from_grads(cycle_result.agent_state, nets_grad)
+      nets, opt_state = self._agent.optimize_from_grads(
+        cycle_result.agent_state.nets, cycle_result.agent_state.opt, nets_grad
+      )
+      agent_state = dataclasses.replace(cycle_result.agent_state, nets=nets, opt=opt_state)
     else:
       actor_state_pre = copy.deepcopy(agent_state.actor)
       cycle_result = self._actor_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
