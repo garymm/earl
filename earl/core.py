@@ -2,7 +2,7 @@
 
 import abc
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 
 import equinox as eqx
@@ -139,15 +139,16 @@ def _act_jit(
 
 @eqx.filter_jit(donate="all-except-first")
 def _update_experience_jit(
-  others: tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], EnvStep],
-  experience: _ExperienceState,
-  update_experience: Callable[
-    [AgentState[_Networks, _OptState, _ExperienceState, _ActorState], EnvStep], _ExperienceState
+  non_donated: tuple[
+    EnvStep,
+    _ActorState,
+    Callable[[_ExperienceState, _ActorState, _ActorState, EnvStep], _ExperienceState],
   ],
-):
-  agent_state_no_exp, trajectory = others
-  agent_state = replace(agent_state_no_exp, experience=experience)
-  return update_experience(agent_state, trajectory)
+  experience: _ExperienceState,
+  actor_state_pre: _ActorState,
+) -> _ExperienceState:
+  trajectory, actor_state_post, update_experience = non_donated
+  return update_experience(experience, actor_state_pre, actor_state_post, trajectory)
 
 
 @eqx.filter_jit(donate="all")
@@ -382,7 +383,9 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
 
   def update_experience(
     self,
-    state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
+    experience_state: _ExperienceState,
+    actor_state_pre: _ActorState,
+    actor_state_post: _ActorState,
     trajectory: EnvStep,
   ) -> _ExperienceState:
     """Observes a trajectory of environment timesteps and updates the experience state.
@@ -391,22 +394,27 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
       jit-compilation.
 
     Args:
-        state: The current agent state. State.experience is donated, so callers should not access it
+        experience_state: The state to be updated. Donated, so callers should not access it
           after calling.
+        actor_state_pre: The actor state before the trajectory. Donated, so callers should not access
+          it after calling.
+        actor_state_post: The actor state after the trajectory.
         trajectory: A trajectory of env steps where the shape of each field is
-        (num_envs, num_steps, *).
+          (num_envs, num_steps, *).
 
     Returns:
         The updated experience.
     """
-    exp = state.experience
-    agent_state_no_exp = replace(state, experience=None)
-    return _update_experience_jit((agent_state_no_exp, trajectory), exp, self._update_experience)
+    return _update_experience_jit(
+      (trajectory, actor_state_post, self._update_experience), experience_state, actor_state_pre
+    )
 
   @abc.abstractmethod
   def _update_experience(
     self,
-    state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
+    experience_state: _ExperienceState,
+    actor_state_pre: _ActorState,
+    actor_state_post: _ActorState,
     trajectory: EnvStep,
   ) -> _ExperienceState:
     """Observes a trajectory of environment timesteps and updates the experience state.

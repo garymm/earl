@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import time
 import typing
@@ -302,9 +303,13 @@ class GymnaxLoop:
       agent_state = dataclasses.replace(
         other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad)
       )
+      actor_state_pre = copy.deepcopy(agent_state.actor)
       cycle_result = self._actor_cycle(agent_state, env_state, env_step, num_steps, key)
       experience_state = self._agent.update_experience(
-        cycle_result.agent_state, cycle_result.trajectory
+        cycle_result.agent_state.experience,
+        actor_state_pre,
+        cycle_result.agent_state.actor,
+        cycle_result.trajectory,
       )
       agent_state = dataclasses.replace(cycle_result.agent_state, experience=experience_state)
       loss, metrics = self._agent.loss(agent_state)
@@ -334,11 +339,15 @@ class GymnaxLoop:
       cycle_result.metrics.update(grad_means)
       agent_state = self._agent.optimize_from_grads(cycle_result.agent_state, nets_grad)
     else:
+      actor_state_pre = copy.deepcopy(agent_state.actor)
       cycle_result = self._actor_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
       agent_state = cycle_result.agent_state
       if not self._actor_only:
         experience_state = self._agent.update_experience(
-          cycle_result.agent_state, cycle_result.trajectory
+          cycle_result.agent_state.experience,
+          actor_state_pre,
+          cycle_result.agent_state.actor,
+          cycle_result.trajectory,
         )
         agent_state = dataclasses.replace(agent_state, experience=experience_state)
 

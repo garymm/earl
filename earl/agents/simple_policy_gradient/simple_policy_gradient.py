@@ -124,5 +124,11 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, None, ActorS
   def num_off_policy_optims_per_cycle(self) -> int:
     return 0
 
-  def _update_experience(self, state: AgentState, trajectory: EnvStep) -> None:
+  def _update_experience(
+    self,
+    experience_state: None,
+    actor_state_pre: ActorState,
+    actor_state_post: ActorState,
+    trajectory: EnvStep,
+  ) -> None:
     return None

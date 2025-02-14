@@ -446,9 +446,11 @@ class GymnasiumLoop:
           while actor_experiences:
             actor_experience = actor_experiences.pop()
             # TODO: do this in parallel across learner devices
-            # TODO: provide actor_state pre and post to update_experience
             experience_state = self._agent.update_experience(
-              agent_state, actor_experience.cycle_result.trajectory
+              agent_state.experience,
+              actor_experience.cycle_result.trajectory,
+              actor_experience.actor_state_pre,
+              actor_experience.cycle_result.agent_state,
             )
             agent_state = dataclasses.replace(agent_state, experience=experience_state)
           del actor_experiences
