@@ -134,8 +134,8 @@ class _ActorThread(threading.Thread):
     env_step: EnvStep,
     num_steps: int,
     key: PRNGKeyArray,
-    run_on_device: jax.Device,
-    result_device: jax.Device,
+    device: jax.Device,
+    learner_devices: typing.Sequence[jax.Device],
     fake_thread: bool = False,
   ):
     """Initializes the _ActorThread.
@@ -146,34 +146,34 @@ class _ActorThread(threading.Thread):
         env_step: The environment step to run the target function on.
         num_steps: The number of steps for the actor cycle.
         key: The PRNG key to run the target function on.
-        run_on_device: The device to run the target function on.
-        result_device: The device to copy the result to.
+        device: The device to run the actor cycle on.
+        learner_devices: The devices to copy the experience to.
         fake_thread: Whether to fake the thread.
            Python debugger can't handle threads, so when debugging this can be very helpful.
     """
     super().__init__()
     self._loop = loop
     self._env = env
-    if run_on_device == result_device:
+    if device == learner_devices:
       self._actor_state = copy.deepcopy(actor_state)
     else:
-      self._actor_state = _filter_device_put(actor_state, run_on_device)
+      self._actor_state = _filter_device_put(actor_state, device)
     self._env_step = env_step
     self._num_steps = num_steps
-    self._key = _filter_device_put(key, run_on_device)
-    self._run_on_device = run_on_device
-    self._result_device = result_device
+    self._key = _filter_device_put(key, device)
+    self._device = device
+    self._learner_devices = learner_devices
     self._fake_thread = fake_thread
 
   def run(self):
     while True:
       with self._loop._networks_for_actor_lock:
-        nets = self._loop._networks_for_actor_device[self._run_on_device]
+        nets = self._loop._networks_for_actor_device[self._device]
       if nets is self.STOP_SIGNAL:
-        _logger.debug("stopping actor on device %s", self._run_on_device)
+        _logger.debug("stopping actor on device %s", self._device)
         break
       actor_state_pre = copy.deepcopy(self._actor_state)
-      with jax.default_device(self._run_on_device):
+      with jax.default_device(self._device):
         cycle_result = self._loop._actor_cycle(
           self._env, self._actor_state, nets, self._env_step, self._num_steps, self._key
         )
@@ -182,13 +182,22 @@ class _ActorThread(threading.Thread):
         cycle_result.env_step,
         cycle_result.key,
       )
-      if self._result_device == self._run_on_device:
+      if self._learner_devices == [self._device]:
         cycle_result = dataclasses.replace(
           cycle_result, agent_state=copy.deepcopy(self._actor_state)
         )
+      else:
+        actor_state_pre = self._loop._agent.shard_actor_state(
+          actor_state_pre, self._learner_devices
+        )
+        actor_state_post = self._loop._agent.shard_actor_state(
+          cycle_result.agent_state, self._learner_devices
+        )
+        cycle_result = dataclasses.replace(
+          cycle_result, agent_state=actor_state_post, trajectory=cycle_result.trajectory
+        )
       experience = _ActorExperience(actor_state_pre=actor_state_pre, cycle_result=cycle_result)
-      # TODO: support multiple learner devices
-      self._loop._experience_q.put(_filter_device_put(experience, self._result_device))
+      self._loop._experience_q.put(experience)
       if self._fake_thread:
         break
 
@@ -269,13 +278,8 @@ class GymnasiumLoop:
         learner_devices: The devices to use for learning. If None, uses jax.local_devices()[0].
     """
     self._actor_devices = actor_devices or jax.local_devices()[0:1]
-    learner_devices = learner_devices or jax.local_devices()[0:1]
-    if len(learner_devices) > 1:
-      _logger.warning(
-        "Multiple learner devices are not supported yet. Using only the first device."
-      )
-    self._learner_device: jax.Device = learner_devices[0]
-    if num_envs % len(learner_devices):
+    self._learner_devices = learner_devices or jax.local_devices()[0:1]
+    if num_envs % len(self._learner_devices):
       raise ValueError("num_envs must be divisible by len(learner_devices).")
 
     self._experience_q: queue.Queue[_ActorExperience] = queue.Queue(
@@ -384,8 +388,8 @@ class GymnasiumLoop:
 
     agent_state = eqx.nn.inference_mode(state.agent_state, value=self._actor_only)
     # everything needs to start on the learner device
-    agent_state = _filter_device_put(agent_state, self._learner_device)
-    self._key = jax.device_put(self._key, self._learner_device)
+    agent_state = self.replicate(agent_state)
+    key = jax.random.split(self._key, len(self._learner_devices))
 
     step_num_metric_start = state.step_num
     env_steps = state.env_step or self.reset_env()
@@ -408,7 +412,7 @@ class GymnasiumLoop:
         actor_thread = _ActorThread(
           self,
           envs.pop(),
-          # Ideally the result would have one actor state per actor thread
+          # Ideally the state arg would have one actor state per actor thread
           # and then pass that here, but treating the actor state as ephemeral
           # between calls to run() seems fine for now.
           agent_state.actor,
@@ -416,7 +420,7 @@ class GymnasiumLoop:
           steps_per_cycle,
           self._key,
           device,
-          self._learner_device,
+          self._learner_devices,
         )
         self._actor_threads.append(actor_thread)
     for thread in self._actor_threads:
@@ -640,8 +644,16 @@ class GymnasiumLoop:
       env.close()
 
   def replicate(self, agent_state: AgentState) -> AgentState:
-    """Replicates the agent state for distributed training.
-
-    This is a no-op because GymnasiumLoop does not support data parallel training.
-    """
-    return agent_state
+    """Replicates the agent state for distributed training."""
+    # Don't require the caller to replicate the agent state.
+    actor_state = agent_state.actor
+    agent_state_leaves = jax.tree.leaves(
+      dataclasses.replace(agent_state, actor=None), is_leaf=eqx.is_array
+    )
+    assert agent_state_leaves
+    assert isinstance(agent_state_leaves[0], jax.Array)
+    if isinstance(agent_state_leaves[0].sharding, jax.sharding.SingleDeviceSharding):
+      agent_state_arrays, agent_state_static = eqx.partition(agent_state, eqx.is_array)
+      agent_state_arrays = jax.device_put_replicated(agent_state_arrays, self._learner_devices)
+      agent_state = eqx.combine(agent_state_arrays, agent_state_static)
+    return dataclasses.replace(agent_state, actor=actor_state)

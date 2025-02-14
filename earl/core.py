@@ -1,7 +1,8 @@
 """Core types."""
 
 import abc
-from collections.abc import Callable, Mapping
+import typing
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 
@@ -170,6 +171,15 @@ def _loss_jit(
   loss: Callable[[_Networks, _OptState, _ExperienceState], tuple[Scalar, Metrics]],
 ):
   return loss(nets, opt_state, experience_state)
+
+
+@eqx.filter_jit()
+def _shard_actor_state_jit(
+  actor_state: _ActorState,
+  learner_devices: typing.Sequence[jax.Device],
+  shard_actor_state: Callable[[_ActorState, Sequence[jax.Device]], _ActorState],
+) -> _ActorState:
+  return shard_actor_state(actor_state, learner_devices)
 
 
 def _convert_gymnasium_space_to_gymnax_space(gym_space: gym_spaces.Space) -> gymnax_spaces.Space:
@@ -495,3 +505,37 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     - grads = jax.grad(multiple calls to self.select_action(state), one call to self.loss(state))()
     - state = self.optimize_from_grads(state, grads)
     """
+
+  def shard_actor_state(
+    self, actor_state: _ActorState, learner_devices: Sequence[jax.Device]
+  ) -> _ActorState:
+    """Shards the actor state for distributed training using pmap.
+
+    The output should have a leading axis equal to the number of devices so that it cam
+    be passed to jax.pmap().
+
+    Sub-classes should override _shard_actor_state. This method is a wrapper that adds
+    jit-compilation.
+
+    Args:
+        actor_state: The actor state to shard.
+        learner_devices: The devices to shard the actor state to.
+
+    Returns:
+        The sharded actor state.
+    """
+    return _shard_actor_state_jit(actor_state, learner_devices, self._shard_actor_state)
+
+  def _shard_actor_state(
+    self, actor_state: _ActorState, learner_devices: Sequence[jax.Device]
+  ) -> _ActorState:
+    """Shards the actor state for distributed training.
+
+    Must be jit-compatible.
+
+    NOTE: you only need this if you are using gymnasium_loop with more than one device.
+    That's why it's not abstract.
+    """
+    raise NotImplementedError(
+      "For multiple devices and gymnasium_loop, you must implement _shard_actor_state"
+    )

@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 import jax
@@ -76,3 +76,8 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
   def num_off_policy_optims_per_cycle(self) -> int:
     """Number of off-policy updates per cycle."""
     return self._num_off_policy_updates
+
+  def _shard_actor_state(
+    self, actor_state: ActorState, learner_devices: Sequence[jax.Device]
+  ) -> ActorState:
+    return jax.device_put_replicated(actor_state, learner_devices)
