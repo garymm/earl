@@ -14,7 +14,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from gymnasium.core import Env as GymnasiumEnv
-from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
+from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv, VectorEnv
 from gymnasium.wrappers import Autoreset
 from gymnax import EnvState
 from gymnax.environments.spaces import Discrete
@@ -107,21 +107,17 @@ def _loss_for_cycle_grad(
 def _filter_device_put(x: PyTree[typing.Any], device: jax.Device | None):
   """Filtered version of `jax.device_put`.
 
-  TODO: simplify now that I don't need to copy back to the update device
-
   The equinox docs suggest filter_shard should work, but it doesn't work
   for all cases it seems.
 
-  **Arguments:**
-
-  - `x`: A PyTree, with potentially a mix of arrays and non-arrays on the leaves.
+  Args:
+    x: A PyTree, with potentially a mix of arrays and non-arrays on the leaves.
       Arrays will be moved to the specified device.
-  - `device`: Either a singular device (e.g. CPU or GPU) or PyTree of
+    device: Either a singular device (e.g. CPU or GPU) or PyTree of
       devices. The structure should be a prefix of `x`.
 
-  **Returns:**
-
-  A copy of `x` with the specified device.
+  Returns:
+    A copy of `x` with the specified device.
   """
   dynamic, static = eqx.partition(x, eqx.is_array)
   dynamic = jax.device_put(dynamic, device)
@@ -134,6 +130,7 @@ class _ActorThread(threading.Thread):
   def __init__(
     self,
     loop: "GymnasiumLoop",
+    env: VectorEnv,
     actor_state: typing.Any,
     env_step: EnvStep,
     num_steps: int,
@@ -157,8 +154,12 @@ class _ActorThread(threading.Thread):
     """
     super().__init__()
     self._loop = loop
-    self._actor_state = _filter_device_put(actor_state, run_on_device)
-    self._env_step = _filter_device_put(env_step, run_on_device)
+    self._env = env
+    if run_on_device == result_device:
+      self._actor_state = copy.deepcopy(actor_state)
+    else:
+      self._actor_state = _filter_device_put(actor_state, run_on_device)
+    self._env_step = env_step
     self._num_steps = num_steps
     self._key = _filter_device_put(key, run_on_device)
     self._run_on_device = run_on_device
@@ -168,14 +169,14 @@ class _ActorThread(threading.Thread):
   def run(self):
     while True:
       with self._loop._networks_for_actor_lock:
-        nets = self._loop._networks_for_actor[self._run_on_device]
+        nets = self._loop._networks_for_actor_device[self._run_on_device]
       if nets is self.STOP_SIGNAL:
         _logger.debug("stopping actor on device %s", self._run_on_device)
         break
       actor_state_pre = copy.deepcopy(self._actor_state)
       with jax.default_device(self._run_on_device):
         cycle_result = self._loop._actor_cycle(
-          self._actor_state, nets, self._env_step, self._num_steps, self._key
+          self._env, self._actor_state, nets, self._env_step, self._num_steps, self._key
         )
       self._actor_state, self._env_step, self._key = (
         cycle_result.agent_state,
@@ -232,6 +233,8 @@ class GymnasiumLoop:
   * On-policy training is not supported (agent.num_off_policy_optims_per_cycle()=0)
   """
 
+  _NUM_ACTOR_THREADS = 2
+
   def __init__(
     self,
     env: GymnasiumEnv,
@@ -243,14 +246,18 @@ class GymnasiumLoop:
     actor_only: bool = False,
     assert_no_recompile: bool = True,
     vectorization_mode: typing.Literal["sync", "async"] = "async",
-    devices: typing.Sequence[jax.Device] | None = None,
+    actor_devices: typing.Sequence[jax.Device] | None = None,
+    learner_devices: typing.Sequence[jax.Device] | None = None,
   ):
     """Initializes the GymnasiumLoop.
 
     Args:
         env: The environment.
         agent: The agent.
-        num_envs: The number of environments to run in parallel.
+        num_envs: The number of environments to run in parallel per actor.
+          Note there will be 2 actor threads per actor device, so the total number of
+          environments is 2 * num_envs * len(actor_devices).
+          Must be divisible by len(learner_devices).
         key: The PRNG key.
         metric_writer: The metric writer to write metrics to.
         observe_cycle: A function that takes a CycleResult representing a final environment state
@@ -259,22 +266,42 @@ class GymnasiumLoop:
         assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         vectorization_mode: Whether to create a synchronous or asynchronous vectorized environment
             from the provided Gymnasium environment.
-        devices: The devices to use for the environment and agent.
-            First device used for inference, second for updates.
-            If None, will use jax.local_devices()[0] for both inference and updates.
+        actor_devices: The devices to use for acting. If None, uses jax.local_devices()[0].
+        learner_devices: The devices to use for learning. If None, uses jax.local_devices()[0].
     """
+    self._actor_devices = actor_devices or jax.local_devices()[0:1]
+    learner_devices = learner_devices or jax.local_devices()[0:1]
+    if len(learner_devices) > 1:
+      _logger.warning(
+        "Multiple learner devices are not supported yet. Using only the first device."
+      )
+    self._learner_device: jax.Device = learner_devices[0]
+    if num_envs % len(learner_devices):
+      raise ValueError("num_envs must be divisible by len(learner_devices).")
+
+    self._experience_q: queue.Queue[_ActorExperience] = queue.Queue(
+      maxsize=2 * len(self._actor_devices)
+    )
+    self._networks_for_actor_device: dict[jax.Device, typing.Any] = {}
+    self._networks_for_actor_lock = threading.Lock()
+    self._actor_threads: list[_ActorThread] = []
+
     env = Autoreset(env)  # run() assumes autoreset.
 
     def _env_factory() -> GymnasiumEnv:
       return copy.deepcopy(env)
 
-    if vectorization_mode == "sync":
-      self._env = SyncVectorEnv([_env_factory for _ in range(num_envs)])
-    else:
-      assert vectorization_mode == "async"
-      # context="spawn" because others are unsafe with multithreaded JAX
-      with _jax_platform_cpu():
-        self._env = AsyncVectorEnv([_env_factory for _ in range(num_envs)], context="spawn")
+    self._env_for_actor_thread: list[VectorEnv] = []
+    for _ in range(self._NUM_ACTOR_THREADS * len(self._actor_devices)):
+      if vectorization_mode == "sync":
+        self._env_for_actor_thread.append(SyncVectorEnv([_env_factory for _ in range(num_envs)]))
+      else:
+        assert vectorization_mode == "async"
+        # context="spawn" because others are unsafe with multithreaded JAX
+        with _jax_platform_cpu():
+          self._env_for_actor_thread.append(
+            AsyncVectorEnv([_env_factory for _ in range(num_envs)], context="spawn")
+          )
 
     sample_key, key = jax.random.split(key)
     sample_key = jax.random.split(sample_key, num_envs)
@@ -302,37 +329,24 @@ class GymnasiumLoop:
     if not self._actor_only and not self._agent.num_off_policy_optims_per_cycle():
       raise ValueError("On-policy training is not supported in GymnasiumLoop.")
 
-    devices = devices or jax.local_devices()[0:1]
-    self._actor_device: jax.Device = devices[0]
-    self._learner_device: jax.Device = devices[0]
-    if len(devices) > 1:
-      self._actor_device = devices[0]
-      self._learner_device = devices[1]
-      if len(devices) > 2:
-        _logger.warning(
-          "Multiple learner devices are not supported yet. Using only the first device."
-        )
-
-    # TODO: maxsize=len(self._actor_devices)
-    self._experience_q: queue.Queue[_ActorExperience] = queue.Queue(maxsize=1)
-    self._networks_for_actor: dict[jax.Device, typing.Any] = {}
-    self._networks_for_actor_lock = threading.Lock()
-    self._actor_threads: list[_ActorThread] = []
-
-  def reset_env(self) -> EnvStep:
-    """Resets the environment.
+  def reset_env(self) -> list[EnvStep]:
+    """Resets the environments.
 
     Should probably not be called by most users.
     Exposed so that callers can get the env_step to restore from a checkpoint.
     """
-    obs, _info = self._env.reset()
-
-    return EnvStep(
-      new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
-      obs=jnp.array(obs),
-      prev_action=jnp.zeros_like(self._example_action),
-      reward=jnp.zeros((self._num_envs,)),
-    )
+    env_steps = []
+    for env in self._env_for_actor_thread:
+      obs, _info = env.reset()
+      env_steps.append(
+        EnvStep(
+          new_episode=jnp.ones((self._num_envs,), dtype=jnp.bool),
+          obs=jnp.array(obs),
+          prev_action=jnp.zeros_like(self._example_action),
+          reward=jnp.zeros((self._num_envs,)),
+        )
+      )
+    return env_steps
 
   def run(
     self,
@@ -360,7 +374,6 @@ class GymnasiumLoop:
     Returns:
         The final loop state and a dictionary of metrics.
         Each metric is a list of length num_cycles. All returned metrics are per-cycle.
-
     """
     if num_cycles <= 0:
       raise ValueError("num_cycles must be positive.")
@@ -373,33 +386,42 @@ class GymnasiumLoop:
     agent_state = eqx.nn.inference_mode(state.agent_state, value=self._actor_only)
     # everything needs to start on the learner device
     agent_state = _filter_device_put(agent_state, self._learner_device)
-    env_step = _filter_device_put(self.reset_env(), self._learner_device)
     self._key = jax.device_put(self._key, self._learner_device)
-    # TODO: do it for all actor devices
-    self._networks_for_actor[self._actor_device] = _filter_device_put(
-      agent_state.nets, self._actor_device
-    )
 
     step_num_metric_start = state.step_num
+    env_steps = state.env_step or self.reset_env()
+    assert isinstance(env_steps, list)
+
     del state
 
     cycles_iter = range(num_cycles)
     if print_progress:
       cycles_iter = tqdm(cycles_iter, desc="cycles", unit="cycle", leave=False)
 
-    env_state = typing.cast(EnvState, None)
-    actor_thread = _ActorThread(
-      self,
-      agent_state.actor,
-      env_step,
-      steps_per_cycle,
-      self._key,
-      self._actor_device,
-      self._learner_device,
-      fake_thread=False,  # TODO: remove
-    )
-    actor_thread.start()
-    self._actor_threads = [actor_thread]
+    self._actor_threads = []
+    envs = self._env_for_actor_thread.copy()
+    for device in self._actor_devices:
+      self._networks_for_actor_device[device] = _filter_device_put(agent_state.nets, device)
+      # 2 actor threads per device results in higher throughput
+      # since one thread can be stepping the environment while the other is
+      # getting actions from the agent.
+      for _ in range(self._NUM_ACTOR_THREADS):
+        actor_thread = _ActorThread(
+          self,
+          envs.pop(),
+          # Ideally the result would have one actor state per actor thread
+          # and then pass that here, but treating the actor state as ephemeral
+          # between calls to run() seems fine for now.
+          agent_state.actor,
+          env_steps.pop(),
+          steps_per_cycle,
+          self._key,
+          device,
+          self._learner_device,
+        )
+        self._actor_threads.append(actor_thread)
+    for thread in self._actor_threads:
+      thread.start()
     actor_wait_duration = 0
     for cycle_num in cycles_iter:
       cycle_start = time.monotonic()
@@ -411,6 +433,7 @@ class GymnasiumLoop:
         except queue.Empty:
           break
 
+      # TODO: learner should not need to know about actor state
       agent_state = dataclasses.replace(
         agent_state, actor=actor_experiences[-1].cycle_result.agent_state
       )
@@ -423,6 +446,7 @@ class GymnasiumLoop:
           while actor_experiences:
             actor_experience = actor_experiences.pop()
             # TODO: do this in parallel across learner devices
+            # TODO: provide actor_state pre and post to update_experience
             experience_state = self._agent.update_experience(
               agent_state, actor_experience.cycle_result.trajectory
             )
@@ -431,15 +455,15 @@ class GymnasiumLoop:
           # TODO: merge metrics from all actor experiences
           agent_state, metrics = self._learn(agent_state, cycle_result.metrics)
         learn_duration = time.monotonic() - cycle_start - actor_wait_duration
-        if cycle_num == 1 and actor_wait_duration > 5 * learn_duration:
+        if cycle_num > 0 and actor_wait_duration > 5 * learn_duration:
           _logger.warning(
             "actors much slower than learning. actor wait duration: %fs, learn duration: %fs",
             actor_wait_duration,
             learn_duration,
           )
         with self._networks_for_actor_lock:
-          for device in self._networks_for_actor:
-            self._networks_for_actor[device] = _filter_device_put(agent_state.nets, device)
+          for device in self._networks_for_actor_device:
+            self._networks_for_actor_device[device] = _filter_device_put(agent_state.nets, device)
 
       observe_cycle_metrics = self._observe_cycle(cycle_result)
 
@@ -459,8 +483,12 @@ class GymnasiumLoop:
       self._metric_writer.write_videos(step_num, metrics_by_type.video)
 
     self._stop_actor_threads()
+    env_steps = [at._env_step for at in self._actor_threads]
     return Result(
-      agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle
+      agent_state,
+      None,
+      env_steps,
+      step_num_metric_start + num_cycles * steps_per_cycle,
     )
 
   def _off_policy_optim(
@@ -498,6 +526,7 @@ class GymnasiumLoop:
 
   def _actor_cycle(
     self,
+    env: VectorEnv,
     actor_state: typing.Any,
     nets: typing.Any,
     env_step: EnvStep,
@@ -516,7 +545,7 @@ class GymnasiumLoop:
         actor_state = action_and_state.state
 
         with nvtx_annotate("env.step"):
-          obs, reward, done, trunc, info = self._env.step(np.array(action_and_state.action))
+          obs, reward, done, trunc, info = env.step(np.array(action_and_state.action))
         env_step = EnvStep(done | trunc, obs, action_and_state.action, reward)
 
         trajectory.append(env_step)
@@ -588,14 +617,13 @@ class GymnasiumLoop:
 
   def _stop_actor_threads(self):
     with self._networks_for_actor_lock:
-      for device in self._networks_for_actor:
-        self._networks_for_actor[device] = _ActorThread.STOP_SIGNAL
+      for device in self._networks_for_actor_device:
+        self._networks_for_actor_device[device] = _ActorThread.STOP_SIGNAL
     while any(thread.is_alive() for thread in self._actor_threads):
       try:
         self._experience_q.get_nowait()
       except queue.Empty:
         time.sleep(0.1)
-    self._actor_threads = []
 
   def _raise_if_metric_conflicts(self, metrics: Mapping):
     try:
@@ -606,7 +634,8 @@ class GymnasiumLoop:
 
   def close(self):
     self._stop_actor_threads()
-    self._env.close()
+    for env in self._env_for_actor_thread:
+      env.close()
 
   def replicate(self, agent_state: AgentState) -> AgentState:
     """Replicates the agent state for distributed training.

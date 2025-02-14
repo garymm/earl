@@ -52,14 +52,12 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
     next(key_gen),
     metric_writer=metric_writer,
     actor_only=inference,
-    devices=jax.devices("cpu")[:1],
   )
   num_cycles = 2
   steps_per_cycle = 10
   agent_state = agent.new_state(networks, env_info, next(key_gen))
   result = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
-  assert result.agent_state.actor.t == num_cycles * steps_per_cycle
   metrics = metric_writer.scalars
   assert len(metrics) == num_cycles
   first_step_num, last_step_num = None, None
@@ -94,9 +92,9 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
 
   assert isinstance(env_info.action_space, Discrete)
   assert env_info.action_space.n > 0
-  assert not loop._env.closed
+  assert all(not env.closed for env in loop._env_for_actor_thread)
   loop.close()
-  assert loop._env.closed
+  assert all(env.closed for env in loop._env_for_actor_thread)
 
 
 def test_bad_args():

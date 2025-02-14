@@ -9,7 +9,6 @@ from ._common import (
   multi_observe_cycle,
   no_op_observe_cycle,
   pixel_obs_to_video_observe_cycle,
-  result_to_cycle_result,
 )
 
 __all__ = [
@@ -21,5 +20,4 @@ __all__ = [
   "State",
   "no_op_observe_cycle",
   "pixel_obs_to_video_observe_cycle",
-  "result_to_cycle_result",
 ]

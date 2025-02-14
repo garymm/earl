@@ -38,7 +38,7 @@ from earl.environment_loop._common import (
   to_num_envs_first,
 )
 from earl.metric_key import MetricKey
-from earl.utils.eqx_filter import filter_scan  # TODO: remove deps on research
+from earl.utils.eqx_filter import filter_scan
 
 
 @eqx.filter_grad(has_aux=True)

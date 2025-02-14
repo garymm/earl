@@ -4,7 +4,7 @@ import os
 import time
 import typing
 
-import gymnasium.core
+import gymnasium
 
 # this doesn't work with pytest discovery because test discovery may import
 # jax before we set the XLA_FLAGS environment variable.
@@ -21,7 +21,7 @@ from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from earl.utils.prng import keygen
 
 
-class SleepEnv(gymnasium.core.Env[np.int64, np.int64]):
+class SleepEnv(gymnasium.Env[np.int64, np.int64]):
   def __init__(self, sleep_secs: float):
     self.sleep_secs = sleep_secs
     self.action_space = gymnasium.spaces.Discrete(2)
@@ -40,7 +40,7 @@ class SleepEnv(gymnasium.core.Env[np.int64, np.int64]):
     return np.int64(0), 0.0, False, False, {}
 
 
-def test_inference_update_different_devices(caplog):
+def test_actor_learner_different_devices(caplog):
   # This test can run on two CPU devices using
   # XLA_FLAGS="--xla_force_host_platform_device_count=2"
   # See the BUILD.bazel file for details.
@@ -61,14 +61,20 @@ def test_inference_update_different_devices(caplog):
   metric_writer = MemoryWriter()
 
   loop = GymnasiumLoop(
-    env, agent, num_envs, next(key_gen), metric_writer=metric_writer, devices=devices
+    env,
+    agent,
+    num_envs,
+    next(key_gen),
+    metric_writer=metric_writer,
+    actor_devices=devices[:1],
+    learner_devices=devices[1:],
   )
-  num_cycles = 2
-  steps_per_cycle = 10
+  num_cycles = 3
+  steps_per_cycle = 5
   agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
   # the default agent_state has nets=None.
   # We set it to an array to check for use-after-donation bugs.
   agent_state = dataclasses.replace(agent_state, nets=jax.numpy.ones((1,)))
   caplog.set_level(logging.WARNING)
   loop.run(agent_state, num_cycles, steps_per_cycle)
-  assert "actor is much slower than update" in caplog.text
+  assert "actors much slower than learning" in caplog.text

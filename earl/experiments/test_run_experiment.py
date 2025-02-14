@@ -357,7 +357,8 @@ def test_run_experiment_closes_loops():
     observe_cycle,
     actor_only: bool = False,
     assert_no_recompile: bool = True,
-    devices: list[jax.Device] | None = None,
+    actor_devices: list[jax.Device] | None = None,
+    learner_devices: list[jax.Device] | None = None,
   ):
     nonlocal train_loop, eval_loop
     loop = MockGymnasiumLoop(
@@ -369,7 +370,8 @@ def test_run_experiment_closes_loops():
       observe_cycle,
       actor_only,
       assert_no_recompile,
-      devices=devices,
+      actor_devices=actor_devices,
+      learner_devices=learner_devices,
     )
     if actor_only:
       eval_loop = loop

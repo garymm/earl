@@ -111,7 +111,7 @@ def pytree_leaf_means(pytree: PyTree, prefix: str) -> dict[str, jax.Array]:
 class State(Generic[_Networks, _OptState, _ExperienceState, _ActorState]):
   agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState]
   env_state: EnvState | None = None
-  env_step: EnvStep | None = None
+  env_step: EnvStep | list[EnvStep] | None = None
   step_num: int = 0
 
 
@@ -130,26 +130,8 @@ class Result(State[_Networks, _OptState, _ExperienceState, _ActorState]):
 
   # Note: defaults are just to please the type checker, since the base class has defaults.
   # We should not actually use the defaults.
-  env_state: EnvState = EnvState(0)
-  env_step: EnvStep = dataclasses.field(
+  env_step: EnvStep | list[EnvStep] = dataclasses.field(
     default_factory=lambda: EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0))
-  )
-
-
-def result_to_cycle_result(result: Result) -> CycleResult:
-  """Converts a Result to a CycleResult.
-
-  Result does not contain all the fields that CycleResult does, namely key, metrics, trajectory, and
-  step_infos. This function fills in the missing fields with dummy values.
-  """
-  return CycleResult(
-    agent_state=result.agent_state,
-    env_state=result.env_state,
-    env_step=result.env_step,
-    key=jax.random.PRNGKey(0),
-    metrics={},
-    trajectory=EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0)),
-    step_infos={},
   )
 
 
