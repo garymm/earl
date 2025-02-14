@@ -29,7 +29,8 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
   networks = None
   num_envs = 2
   key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env.action_space().sample, num_off_policy_updates)
+  env_info = env_info_from_gymnax(env, env_params, num_envs)
+  agent = RandomAgent(env_info, env.action_space().sample, num_off_policy_updates)
   metric_writer = MemoryWriter()
   loop = GymnaxLoop(
     env,
@@ -42,8 +43,7 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
   )
   num_cycles = 2
   steps_per_cycle = 10
-  env_info = env_info_from_gymnax(env, env_params, num_envs)
-  agent_state = agent.new_state(networks, env_info, next(key_gen))
+  agent_state = agent.new_state(networks, next(key_gen))
   result = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
   assert result.agent_state.actor.t == num_cycles * steps_per_cycle
@@ -84,12 +84,12 @@ def test_gymnax_loop(inference: bool, num_off_policy_updates: int):
 def test_bad_args():
   num_envs = 2
   env, env_params = gymnax.make("CartPole-v1")
-  agent = RandomAgent(env.action_space().sample, 0)
+  env_info = env_info_from_gymnax(env, env_params, num_envs)
+  agent = RandomAgent(env_info, env.action_space().sample, 0)
   loop = GymnaxLoop(
     env, env_params, agent, num_envs, jax.random.PRNGKey(0), metric_writer=NoOpWriter()
   )
-  env_info = env_info_from_gymnax(env, env_params, num_envs)
-  agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(None, jax.random.PRNGKey(0))
   with pytest.raises(ValueError, match="num_cycles"):
     loop.run(agent_state, 0, 10)
   with pytest.raises(ValueError, match="steps_per_cycle"):
@@ -100,16 +100,16 @@ def test_bad_metric_key():
   env, env_params = gymnax.make("CartPole-v1")
   networks = None
   num_envs = 2
+  env_info = env_info_from_gymnax(env, env_params, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
   # make the agent return a metric with a key that conflicts with a built-in metric.
-  agent = RandomAgent(env.action_space().sample, 0)
+  agent = RandomAgent(env_info, env.action_space().sample, 0)
   agent = dataclasses.replace(agent, _opt_count_metric_key=MetricKey.DURATION_SEC)
 
   loop = GymnaxLoop(env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter())
   num_cycles = 1
   steps_per_cycle = 1
-  env_info = env_info_from_gymnax(env, env_params, num_envs)
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   with pytest.raises(ConflictingMetricError):
     loop.run(agent_state, num_cycles, steps_per_cycle)
 
@@ -118,20 +118,20 @@ def test_continuous_action_space():
   env, env_params = gymnax.make("Swimmer-misc")
   networks = None
   num_envs = 2
+  env_info = env_info_from_gymnax(env, env_params, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
   action_space = env.action_space()
   assert isinstance(action_space, gymnax.environments.spaces.Box)
   assert isinstance(action_space.low, jax.Array)
   assert isinstance(action_space.high, jax.Array)
-  agent = RandomAgent(action_space.sample, 0)
+  agent = RandomAgent(env_info, action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnaxLoop(
     env, env_params, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=True
   )
   num_cycles = 1
   steps_per_cycle = 1
-  env_info = env_info_from_gymnax(env, env_params, num_envs)
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   loop.run(agent_state, num_cycles, steps_per_cycle)
   for _, v in metric_writer.scalars.items():
     for k in v:
@@ -142,12 +142,12 @@ def test_observe_cycle():
   env, env_params = gymnax.make("Swimmer-misc")
   networks = None
   num_envs = 2
+  env_info = env_info_from_gymnax(env, env_params, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env.action_space().sample, 0)
+  agent = RandomAgent(env_info, env.action_space().sample, 0)
   num_cycles = 2
   steps_per_cycle = 3
-  env_info = env_info_from_gymnax(env, env_params, num_envs)
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
 
   def observe_cycle(cycle_result: CycleResult) -> Metrics:
     assert cycle_result.trajectory.obs.shape[0] == num_envs

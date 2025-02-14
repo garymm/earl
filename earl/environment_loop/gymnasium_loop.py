@@ -172,6 +172,7 @@ class _ActorThread(threading.Thread):
       if nets is self.STOP_SIGNAL:
         _logger.debug("stopping actor on device %s", self._device)
         break
+      self._actor_state = self._loop._agent.prepare_for_actor_cycle(self._actor_state)
       actor_state_pre = copy.deepcopy(self._actor_state)
       with jax.default_device(self._device):
         cycle_result = self._loop._actor_cycle(

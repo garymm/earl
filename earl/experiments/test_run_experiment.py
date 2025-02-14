@@ -18,7 +18,7 @@ from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 from jaxtyping import PyTree
 
 from earl.agents.random_agent.random_agent import RandomAgent
-from earl.core import Agent, Image, Metrics, env_info_from_gymnasium
+from earl.core import Agent, Image, Metrics, env_info_from_gymnasium, env_info_from_gymnax
 from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from earl.experiments.config import (
   CheckpointConfig,
@@ -88,12 +88,14 @@ def test_run_experiment_no_eval_cycles(env_backend: str, num_eval_cycles: int):
   if env_backend == "gymnax":
     env, env_params = gymnax.make("CartPole-v1")
     action_space = env.action_space(env_params)  # pyright: ignore[reportArgumentType]
+    env_info = env_info_from_gymnax(env, env_params, 1)
   else:
     env = gymnasium.make("CartPole-v1")
     env_params = None
-    action_space = env_info_from_gymnasium(env, 1).action_space
+    env_info = env_info_from_gymnasium(env, 1)
+    action_space = env_info.action_space
 
-  agent = RandomAgent(action_space.sample, 1)
+  agent = RandomAgent(env_info, action_space.sample, 1)
   experiment = FakeExperimentConfig(
     env_obj=env,
     agent_obj=agent,
@@ -138,12 +140,13 @@ def test_restore_with_no_checkpoint(env_backend: str, tmp_path):
   if env_backend == "gymnax":
     env, env_params = gymnax.make("CartPole-v1")
     action_space = env.action_space(env_params)  # pyright: ignore[reportArgumentType]
+    env_info = env_info_from_gymnax(env, env_params, 1)
   else:
     env = gymnasium.make("CartPole-v1")
     env_params = None
     action_space = env_info_from_gymnasium(env, 1).action_space
-
-  agent = RandomAgent(action_space.sample, 0)
+    env_info = env_info_from_gymnasium(env, 1)
+  agent = RandomAgent(env_info, action_space.sample, 0)
   max_to_keep = 2
   checkpoint_manager_options = ocp.CheckpointManagerOptions(
     save_interval_steps=1, max_to_keep=max_to_keep
@@ -179,13 +182,15 @@ def test_checkpointing(env_backend: str, tmp_path):
     if env_backend == "gymnax":
       env, env_params = gymnax.make("CartPole-v1")
       action_space = env.action_space(env_params)  # pyright: ignore[reportArgumentType]
+      env_info = env_info_from_gymnax(env, env_params, 1)
     else:
       env = gymnasium.make("CartPole-v1")
       env_params = None
-      action_space = env_info_from_gymnasium(env, 1).action_space
+      env_info = env_info_from_gymnasium(env, 1)
+      action_space = env_info.action_space
     return FakeExperimentConfig(
       env_obj=env,
-      agent_obj=RandomAgent(action_space.sample, 1),
+      agent_obj=RandomAgent(env_info, action_space.sample, 1),
       env=env_params,
       num_eval_cycles=num_eval_cycles,
       num_train_cycles=10,
@@ -283,12 +288,14 @@ def test_error_on_restore_only_no_training(env_backend: str):
   if env_backend == "gymnax":
     env, env_params = gymnax.make("CartPole-v1")
     action_space = env.action_space(env_params)  # pyright: ignore[reportArgumentType]
+    env_info = env_info_from_gymnax(env, env_params, 1)
   else:
     env = gymnasium.make("CartPole-v1")
     env_params = None
-    action_space = env_info_from_gymnasium(env, 1).action_space
+    env_info = env_info_from_gymnasium(env, 1)
+    action_space = env_info.action_space
 
-  agent = RandomAgent(action_space.sample, 0)
+  agent = RandomAgent(env_info, action_space.sample, 0)
   with pytest.raises(ValueError, match="num_train_cycles must be positive"):
     FakeExperimentConfig(
       env_obj=env,
@@ -329,9 +336,10 @@ def test_metric_serialization():
 def test_run_experiment_closes_loops():
   """Test that run_experiment properly closes both train and eval loops."""
   env = gymnasium.make("CartPole-v1")
-  action_space = env_info_from_gymnasium(env, 1).action_space
+  env_info = env_info_from_gymnasium(env, 1)
+  action_space = env_info.action_space
 
-  agent = RandomAgent(action_space.sample, 1)
+  agent = RandomAgent(env_info, action_space.sample, 1)
   experiment = FakeExperimentConfig(
     env_obj=env,
     agent_obj=agent,

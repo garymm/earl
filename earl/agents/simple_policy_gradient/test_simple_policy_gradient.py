@@ -16,11 +16,12 @@ from earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
 def test_learns_cart_pole():
   env = CartPole()
   num_envs = 500
+  env_info = env_info_from_gymnax(env, env.default_params, num_envs)
   steps_per_cycle = 80
   num_cycles = 50
 
   config = Config(max_actor_state_history=steps_per_cycle, optimizer=optax.adam(5e-3))
-  agent = SimplePolicyGradient(config)
+  agent = SimplePolicyGradient(env_info, config)
   (input_shape,) = env.obs_shape
 
   nets_key, loop_key, agent_key = jax.random.split(jax.random.PRNGKey(0), 3)
@@ -28,8 +29,7 @@ def test_learns_cart_pole():
   networks = make_networks([input_shape, 32, env.num_actions], nets_key)
   metric_writer = MemoryWriter()
   loop = GymnaxLoop(env, env.default_params, agent, num_envs, loop_key, metric_writer=metric_writer)
-  env_info = env_info_from_gymnax(env, env.default_params, num_envs)
-  agent_state = agent.new_state(networks, env_info, agent_key)
+  agent_state = agent.new_state(networks, agent_key)
   agent_state = loop.run(agent_state, num_cycles, steps_per_cycle)
   assert agent_state is not None
   metrics = metric_writer.scalars

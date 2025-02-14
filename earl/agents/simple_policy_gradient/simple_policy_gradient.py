@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.core import ActionAndState, Agent, EnvInfo, EnvStep, Metrics
+from earl.core import ActionAndState, Agent, EnvStep, Metrics
 from earl.core import AgentState as CoreAgentState
 
 
@@ -55,28 +55,26 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceSt
 
   config: Config
 
-  def _new_actor_state(
-    self, nets: eqx.nn.Sequential, env_info: EnvInfo, key: PRNGKeyArray
-  ) -> ActorState:
+  def _new_actor_state(self, nets: eqx.nn.Sequential, key: PRNGKeyArray) -> ActorState:
     return ActorState(
-      chosen_action_log_probs=jnp.zeros((env_info.num_envs, self.config.max_actor_state_history)),
+      chosen_action_log_probs=jnp.zeros(
+        (self.env_info.num_envs, self.config.max_actor_state_history)
+      ),
       key=key,
-      mask=jnp.ones((env_info.num_envs,), dtype=jnp.bool),
-      rewards=jnp.zeros((env_info.num_envs, self.config.max_actor_state_history)),
+      mask=jnp.ones((self.env_info.num_envs,), dtype=jnp.bool),
+      rewards=jnp.zeros((self.env_info.num_envs, self.config.max_actor_state_history)),
       t=jnp.array(0, dtype=jnp.uint32),
     )
 
-  def _new_experience_state(
-    self, nets: eqx.nn.Sequential, env_info: EnvInfo, key: PRNGKeyArray
-  ) -> ExperienceState:
+  def _new_experience_state(self, nets: eqx.nn.Sequential, key: PRNGKeyArray) -> ExperienceState:
     return ExperienceState(
-      rewards=jnp.zeros((env_info.num_envs, self.config.max_actor_state_history)),
-      chosen_action_log_probs=jnp.zeros((env_info.num_envs, self.config.max_actor_state_history)),
+      rewards=jnp.zeros((self.env_info.num_envs, self.config.max_actor_state_history)),
+      chosen_action_log_probs=jnp.zeros(
+        (self.env_info.num_envs, self.config.max_actor_state_history)
+      ),
     )
 
-  def _new_opt_state(
-    self, nets: eqx.nn.Sequential, env_info: EnvInfo, key: PRNGKeyArray
-  ) -> optax.OptState:
+  def _new_opt_state(self, nets: eqx.nn.Sequential, key: PRNGKeyArray) -> optax.OptState:
     return self.config.optimizer.init(eqx.filter(nets, eqx.is_array))
 
   def _act(
@@ -100,23 +98,30 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceSt
       key=key,
       mask=actor_state.mask & ~env_step.new_episode,
       rewards=set_batch(actor_state.rewards, env_step.reward * actor_state.mask),
-      t=actor_state.t + 1,
+      t=(actor_state.t + 1) % self.config.max_actor_state_history,
     )
     return ActionAndState(actions, actor_state)
+
+  def _prepare_for_actor_cycle(self, actor_state: ActorState) -> ActorState:
+    """Prepares actor state for a new cycle of acting.
+
+    Resets the buffers and counters while preserving the random key.
+    """
+    return ActorState(
+      chosen_action_log_probs=jnp.zeros(
+        (self.env_info.num_envs, self.config.max_actor_state_history)
+      ),
+      key=actor_state.key,
+      mask=jnp.ones((self.env_info.num_envs,), dtype=jnp.bool),
+      rewards=jnp.zeros((self.env_info.num_envs, self.config.max_actor_state_history)),
+      t=jnp.array(0, dtype=jnp.uint32),
+    )
 
   def _optimize_from_grads(
     self, nets: eqx.nn.Sequential, opt_state: optax.OptState, nets_grads: PyTree
   ) -> tuple[eqx.nn.Sequential, optax.OptState]:
     updates, opt_state = self.config.optimizer.update(nets_grads, opt_state)
     nets = eqx.apply_updates(nets, updates)
-    # TODO: figure out where to reset actor state
-    actor_state = dataclasses.replace(
-      state.actor,
-      chosen_action_log_probs=jnp.zeros_like(state.actor.chosen_action_log_probs),
-      mask=jnp.ones_like(state.actor.mask),
-      rewards=jnp.zeros_like(state.actor.rewards),
-      t=jnp.zeros_like(state.actor.t),
-    )
     return nets, opt_state
 
   def _loss(

@@ -4,6 +4,7 @@ import abc
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 
 import equinox as eqx
@@ -15,6 +16,8 @@ from gymnasium.core import Env as GymnasiumEnv
 from gymnax.environments.environment import Environment as GymnaxEnv
 from gymnax.environments.spaces import Space
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
+
+from earl.utils.sharding import shard_along_axis_0
 
 
 class ConflictingMetricError(Exception):
@@ -173,7 +176,15 @@ def _loss_jit(
   return loss(nets, opt_state, experience_state)
 
 
+@eqx.filter_jit(donate="warn")
+def _prepare_for_actor_cycle_jit(
+  actor_state: _ActorState, prepare_for_actor_cycle: Callable[[_ActorState], _ActorState]
+) -> _ActorState:
+  return prepare_for_actor_cycle(actor_state)
+
+
 @eqx.filter_jit()
+@eqx.debug.assert_max_traces(max_traces=1)  # TODO remove once I test
 def _shard_actor_state_jit(
   actor_state: _ActorState,
   learner_devices: typing.Sequence[jax.Device],
@@ -275,8 +286,10 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
           state = a.optimize_from_grads(state, grad)
   """
 
+  env_info: EnvInfo
+
   def new_state(
-    self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray
+    self, nets: _Networks, key: PRNGKeyArray
   ) -> AgentState[_Networks, _OptState, _ExperienceState, _ActorState]:
     """Initializes agent state.
 
@@ -288,18 +301,18 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
 
     # helper funcion to wrap with jit.
     @eqx.filter_jit(donate="all")
-    def _helper(nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray):
+    def _helper(nets: _Networks, key: PRNGKeyArray):
       step_key, opt_key, replay_key = jax.random.split(key, 3)
       return AgentState(
-        actor=self.new_actor_state(nets, env_info, step_key),
+        actor=self.new_actor_state(nets, step_key),
         nets=nets,
-        opt=self.new_opt_state(nets, env_info, opt_key),
-        experience=self.new_experience_state(nets, env_info, replay_key),
+        opt=self.new_opt_state(nets, opt_key),
+        experience=self.new_experience_state(nets, replay_key),
       )
 
-    return _helper(nets, env_info, key)
+    return _helper(nets, key)
 
-  def new_actor_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _ActorState:
+  def new_actor_state(self, nets: _Networks, key: PRNGKeyArray) -> _ActorState:
     """Returns a new actor state.
 
     Args:
@@ -307,31 +320,26 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
         env_info: info about the environment.
         key: a PRNG key.
     """
-    return eqx.filter_jit(self._new_actor_state)(nets, env_info, key)
+    return eqx.filter_jit(self._new_actor_state)(nets, key)
 
   @abc.abstractmethod
-  def _new_actor_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _ActorState:
+  def _new_actor_state(self, nets: _Networks, key: PRNGKeyArray) -> _ActorState:
     """Returns a new actor state.
 
     Must be jit-compatible.
     """
 
-  def new_experience_state(
-    self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray
-  ) -> _ExperienceState:
+  def new_experience_state(self, nets: _Networks, key: PRNGKeyArray) -> _ExperienceState:
     """Initializes experience state.
 
     Args:
         nets: the agent's neural networks.
-        env_info: info about the environment.
         key: a PRNG key.
     """
-    return eqx.filter_jit(self._new_experience_state)(nets, env_info, key)
+    return eqx.filter_jit(self._new_experience_state)(nets, key)
 
   @abc.abstractmethod
-  def _new_experience_state(
-    self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray
-  ) -> _ExperienceState:
+  def _new_experience_state(self, nets: _Networks, key: PRNGKeyArray) -> _ExperienceState:
     """Initializes replay state.
 
     If an agent is on-policy (doesn't have any experience state), it can just return None.
@@ -339,7 +347,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     Must be jit-compatible.
     """
 
-  def new_opt_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _OptState:
+  def new_opt_state(self, nets: _Networks, key: PRNGKeyArray) -> _OptState:
     """Initializes optimizer state.
 
     Args:
@@ -347,10 +355,10 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
         env_info: info about the environment.
         key: a PRNG key.
     """
-    return eqx.filter_jit(self._new_opt_state)(nets, env_info, key)
+    return eqx.filter_jit(self._new_opt_state)(nets, key)
 
   @abc.abstractmethod
-  def _new_opt_state(self, nets: _Networks, env_info: EnvInfo, key: PRNGKeyArray) -> _OptState:
+  def _new_opt_state(self, nets: _Networks, key: PRNGKeyArray) -> _OptState:
     """Initializes optimizer state.
 
     Must be jit-compatible.
@@ -379,6 +387,29 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     self, actor_state: _ActorState, nets: _Networks, env_step: EnvStep
   ) -> ActionAndState[_ActorState]:
     """Selects a batch of actions and updates actor state.
+
+    Must be jit-compatible.
+    """
+
+  def prepare_for_actor_cycle(self, actor_state: _ActorState) -> _ActorState:
+    """Prepares actor state for a new cycle of acting.
+
+    Generally reset any fixed-size buffers that fill up during a cycle.
+
+    Sub-classes should override _prepare_for_actor_cycle. This method is a wrapper that adds
+    jit-compilation.
+
+    Args:
+        actor_state: The actor state to prepare. Donated, so callers should not access it after calling.
+
+    Returns:
+        The prepared actor state.
+    """
+    return _prepare_for_actor_cycle_jit(actor_state, self._prepare_for_actor_cycle)
+
+  @abc.abstractmethod
+  def _prepare_for_actor_cycle(self, actor_state: _ActorState) -> _ActorState:
+    """Prepares actor state for a new cycle of acting.
 
     Must be jit-compatible.
     """
@@ -533,9 +564,17 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
 
     Must be jit-compatible.
 
-    NOTE: you only need this if you are using gymnasium_loop with more than one device.
-    That's why it's not abstract.
+    Default implementation shards all arrays that have a leading axis equal to the number of
+    environments, and replicates the rest.
     """
-    raise NotImplementedError(
-      "For multiple devices and gymnasium_loop, you must implement _shard_actor_state"
+    return jax.tree.map(
+      partial(self._shard_actor_state_array, learner_devices=learner_devices), actor_state
     )
+
+  def _shard_actor_state_array(
+    self, x: jax.Array, learner_devices: Sequence[jax.Device]
+  ) -> jax.Array:
+    if x.shape[0] == self.env_info.num_envs:
+      return shard_along_axis_0(x, learner_devices)
+    else:
+      return jax.device_put_replicated(x, learner_devices)

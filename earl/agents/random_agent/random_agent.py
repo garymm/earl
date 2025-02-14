@@ -1,11 +1,11 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.core import ActionAndState, Agent, EnvInfo, EnvStep, Metrics
+from earl.core import ActionAndState, Agent, EnvStep, Metrics
 from earl.core import AgentState as CoreAgentState
 
 
@@ -32,13 +32,13 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
   _num_off_policy_updates: int
   _opt_count_metric_key: str = "opt_count"
 
-  def _new_actor_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> ActorState:
+  def _new_actor_state(self, nets: None, key: PRNGKeyArray) -> ActorState:
     return ActorState(key, jnp.zeros((1,), dtype=jnp.uint32))
 
-  def _new_opt_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> OptState:
+  def _new_opt_state(self, nets: None, key: PRNGKeyArray) -> OptState:
     return OptState(jnp.zeros((), dtype=jnp.uint32))
 
-  def _new_experience_state(self, nets: None, env_info: EnvInfo, key: PRNGKeyArray) -> None:
+  def _new_experience_state(self, nets: None, key: PRNGKeyArray) -> None:
     return None
 
   def _act(
@@ -77,7 +77,6 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
     """Number of off-policy updates per cycle."""
     return self._num_off_policy_updates
 
-  def _shard_actor_state(
-    self, actor_state: ActorState, learner_devices: Sequence[jax.Device]
-  ) -> ActorState:
-    return jax.device_put_replicated(actor_state, learner_devices)
+  def _prepare_for_actor_cycle(self, actor_state: ActorState) -> ActorState:
+    """Resets the random key."""
+    return actor_state

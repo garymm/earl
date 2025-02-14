@@ -36,7 +36,7 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
   env_info = env_info_from_gymnasium(env, num_envs)
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env_info.action_space.sample, num_off_policy_updates)
+  agent = RandomAgent(env_info, env_info.action_space.sample, num_off_policy_updates)
   metric_writer = MemoryWriter()
   if not inference and not num_off_policy_updates:
     with pytest.raises(ValueError, match="On-policy training is not supported in GymnasiumLoop."):
@@ -55,7 +55,7 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
   )
   num_cycles = 2
   steps_per_cycle = 10
-  agent_state = agent.new_state(networks, env_info, next(key_gen))
+  agent_state = agent.new_state(networks, next(key_gen))
   result = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
   metrics = metric_writer.scalars
@@ -101,12 +101,12 @@ def test_bad_args():
   num_envs = 2
   env = CartPoleEnv()
   env_info = env_info_from_gymnasium(env, num_envs)
-  agent = RandomAgent(env_info.action_space.sample, 0)
+  agent = RandomAgent(env_info, env_info.action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
     env, agent, num_envs, jax.random.PRNGKey(0), metric_writer=metric_writer, actor_only=True
   )
-  agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(None, jax.random.PRNGKey(0))
   with pytest.raises(ValueError, match="num_cycles"):
     loop.run(agent_state, 0, 10)
   with pytest.raises(ValueError, match="steps_per_cycle"):
@@ -120,14 +120,14 @@ def test_bad_metric_key():
   env_info = env_info_from_gymnasium(env, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
   # make the agent return a metric with a key that conflicts with a built-in metric.
-  agent = RandomAgent(env_info.action_space.sample, 1)
+  agent = RandomAgent(env_info, env_info.action_space.sample, 1)
   agent = dataclasses.replace(agent, _opt_count_metric_key=MetricKey.DURATION_SEC)
 
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(env, agent, num_envs, next(key_gen), metric_writer=metric_writer)
   num_cycles = 1
   steps_per_cycle = 1
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   with pytest.raises(ConflictingMetricError):
     loop.run(agent_state, num_cycles, steps_per_cycle)
 
@@ -142,14 +142,14 @@ def test_continuous_action_space():
   assert isinstance(action_space, gymnax.environments.spaces.Box)
   assert isinstance(action_space.low, jax.Array)
   assert isinstance(action_space.high, jax.Array)
-  agent = RandomAgent(action_space.sample, 0)
+  agent = RandomAgent(env_info, action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
     env, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=True
   )
   num_cycles = 1
   steps_per_cycle = 1
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   loop.run(agent_state, num_cycles, steps_per_cycle)
   for _, v in metric_writer.scalars.items():
     for k in v:
@@ -162,7 +162,7 @@ def test_observe_cycle():
   env_info = env_info_from_gymnasium(env, num_envs)
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env_info.action_space.sample, 0)
+  agent = RandomAgent(env_info, env_info.action_space.sample, 0)
   metric_writer = MemoryWriter()
   num_cycles = 2
   steps_per_cycle = 3
@@ -181,7 +181,7 @@ def test_observe_cycle():
     actor_only=True,
     observe_cycle=observe_cycle,
   )
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   loop.run(agent_state, num_cycles, steps_per_cycle)
   for _, v in metric_writer.scalars.items():
     assert v.get("ran", False)
@@ -194,11 +194,12 @@ def test_benchmark_gymnasium_inference():
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
   agent = simple_policy_gradient.SimplePolicyGradient(
+    env_info,
     simple_policy_gradient.Config(
       max_actor_state_history=100,
       optimizer=optax.adam(1e-3),
       discount=0.99,
-    )
+    ),
   )
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
@@ -216,7 +217,7 @@ def test_benchmark_gymnasium_inference():
     [env_info.observation_space.shape[0], 200, 200, 200, 200, 200, env_info.action_space.n],
     jax.random.PRNGKey(0),
   )
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   steps_per_cycle = 100
   result = loop.run(agent_state, 1, steps_per_cycle)  # warmup
   assert result.agent_state.actor.t == steps_per_cycle

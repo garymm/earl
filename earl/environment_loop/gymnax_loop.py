@@ -299,7 +299,9 @@ class GymnaxLoop:
       key: PRNGKeyArray,
     ) -> tuple[Scalar, CycleResult]:
       agent_state = dataclasses.replace(
-        other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad)
+        other_agent_state,
+        nets=eqx.combine(nets_yes_grad, nets_no_grad),
+        actor=self._agent.prepare_for_actor_cycle(other_agent_state.actor),
       )
       actor_state_pre = copy.deepcopy(agent_state.actor)
       cycle_result = self._actor_cycle(agent_state, env_state, env_step, num_steps, key)
@@ -340,6 +342,10 @@ class GymnaxLoop:
       )
       agent_state = dataclasses.replace(cycle_result.agent_state, nets=nets, opt=opt_state)
     else:
+      agent_state = dataclasses.replace(
+        agent_state,
+        actor=self._agent.prepare_for_actor_cycle(agent_state.actor),
+      )
       actor_state_pre = copy.deepcopy(agent_state.actor)
       cycle_result = self._actor_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
       agent_state = cycle_result.agent_state

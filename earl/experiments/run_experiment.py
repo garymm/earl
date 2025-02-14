@@ -12,7 +12,7 @@ from jax_loop_utils.metric_writers import KeepLastWriter
 from jax_loop_utils.metric_writers.interface import MetricWriter
 from jaxtyping import PRNGKeyArray
 
-from earl.core import Agent, env_info_from_gymnasium, env_info_from_gymnax
+from earl.core import Agent
 from earl.environment_loop import ObserveCycle, no_op_observe_cycle
 from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from earl.environment_loop.gymnax_loop import GymnaxLoop
@@ -242,11 +242,9 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
       num_envs = int(num_envs)
 
   if isinstance(env, GymnasiumEnv):
-    env_info = env_info_from_gymnasium(env, config.num_envs)
     loop_factory = _new_gymnasium_loop
   else:
     assert isinstance(env, gymnax.environments.environment.Environment)
-    env_info = env_info_from_gymnax(env, env_params, config.num_envs)
     loop_factory = _new_gymnax_loop
 
   train_loop: GymnasiumLoop | GymnaxLoop = loop_factory(
@@ -261,7 +259,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     learner_devices=config.jax_learner_devices(),
   )
 
-  train_agent_state = agent.new_state(networks, env_info, train_key)
+  train_agent_state = agent.new_state(networks, train_key)
   del networks
 
   train_agent_state = train_loop.replicate(train_agent_state)
@@ -321,9 +319,7 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
         )
     if eval_loop:
       eval_new_state_key, key = jax.random.split(key)
-      eval_agent_state = agent.new_state(
-        train_loop_state.agent_state.nets, env_info, eval_new_state_key
-      )
+      eval_agent_state = agent.new_state(train_loop_state.agent_state.nets, eval_new_state_key)
       eval_loop_state = LoopState(eval_agent_state, step_num=train_loop_state.step_num)
       eval_loop_state = eval_loop.run(eval_loop_state, 1, config.steps_per_cycle)
       # we don't expect nets to be modified, but the memory is donated to loop.run,

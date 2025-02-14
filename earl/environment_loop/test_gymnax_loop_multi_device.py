@@ -23,17 +23,16 @@ def test_run_with_state():
   num_envs = 2
   obs, env_state = jax.vmap(env.reset)(jax.random.split(jax.random.PRNGKey(0), num_envs))
   key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env.action_space().sample, 1)
+  env_info = env_info_from_gymnax(env, env_params, num_envs)
+  agent = RandomAgent(env_info, env_info.action_space.sample, 1)
   env.reset = mock.Mock(spec=env.reset)
   devices = jax.local_devices()
   loop = GymnaxLoop(
     env, env_params, agent, num_envs, next(key_gen), metric_writer=NoOpWriter(), devices=devices
   )
-  agent_state = agent.new_state(
-    None, env_info_from_gymnax(env, env_params, num_envs), jax.random.PRNGKey(0)
-  )
+  agent_state = agent.new_state(None, jax.random.PRNGKey(0))
   initial_step_num = 2
-  prev_action = jax.vmap(env.action_space(None).sample)(
+  prev_action = jax.vmap(env_info.action_space.sample)(
     jax.random.split(jax.random.PRNGKey(0), num_envs)
   )
   assert isinstance(prev_action, jax.Array)

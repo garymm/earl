@@ -57,7 +57,7 @@ def test_actor_learner_different_devices(caplog):
   env = SleepEnv(sleep_secs=0.1)
   env_info = env_info_from_gymnasium(env, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env_info.action_space.sample, 1)
+  agent = RandomAgent(env_info, env_info.action_space.sample, 1)
   metric_writer = MemoryWriter()
 
   loop = GymnasiumLoop(
@@ -71,7 +71,7 @@ def test_actor_learner_different_devices(caplog):
   )
   num_cycles = 3
   steps_per_cycle = 5
-  agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(None, jax.random.PRNGKey(0))
   # the default agent_state has nets=None.
   # We set it to an array to check for use-after-donation bugs.
   agent_state = dataclasses.replace(agent_state, nets=jax.numpy.ones((1,)))
