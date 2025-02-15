@@ -13,8 +13,7 @@ from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
 from earl.agents.random_agent.random_agent import RandomAgent
 from earl.agents.simple_policy_gradient import simple_policy_gradient
-from earl.core import ConflictingMetricError, Metrics, env_info_from_gymnasium
-from earl.environment_loop import CycleResult
+from earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnasium
 from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from earl.metric_key import MetricKey
 from earl.utils.prng import keygen
@@ -36,12 +35,12 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
   env_info = env_info_from_gymnasium(env, num_envs)
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env_info.action_space.sample, num_off_policy_updates)
+  agent = RandomAgent(env_info, env_info.action_space.sample, num_off_policy_updates)
   metric_writer = MemoryWriter()
   if not inference and not num_off_policy_updates:
     with pytest.raises(ValueError, match="On-policy training is not supported in GymnasiumLoop."):
       loop = GymnasiumLoop(
-        env, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=inference
+        env, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=inference
       )
     return
 
@@ -51,15 +50,13 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
     num_envs,
     next(key_gen),
     metric_writer=metric_writer,
-    inference=inference,
-    devices=jax.devices("cpu")[:1],
+    actor_only=inference,
   )
   num_cycles = 2
   steps_per_cycle = 10
-  agent_state = agent.new_state(networks, env_info, next(key_gen))
+  agent_state = agent.new_state(networks, next(key_gen))
   result = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
-  assert result.agent_state.step.t == num_cycles * steps_per_cycle
   metrics = metric_writer.scalars
   assert len(metrics) == num_cycles
   first_step_num, last_step_num = None, None
@@ -79,36 +76,36 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
     assert action_count_sum > 0
     if not inference:
       assert MetricKey.LOSS in metrics_for_step
-      assert agent._prng_metric_key in metrics_for_step
+      assert agent._opt_count_metric_key in metrics_for_step
   if inference:
     assert result.agent_state.opt.opt_count == 0
   else:
     assert first_step_num is not None
     assert last_step_num is not None
     assert (
-      metrics[first_step_num][agent._prng_metric_key]
-      != metrics[last_step_num][agent._prng_metric_key]
+      metrics[first_step_num][agent._opt_count_metric_key]
+      != metrics[last_step_num][agent._opt_count_metric_key]
     )
     expected_opt_count = num_cycles * (num_off_policy_updates or 1)
     assert result.agent_state.opt.opt_count == expected_opt_count
 
   assert isinstance(env_info.action_space, Discrete)
   assert env_info.action_space.n > 0
-  assert not loop._env.closed
+  assert all(not env.closed for env in loop._env_for_actor_thread)
   loop.close()
-  assert loop._env.closed
+  assert all(env.closed for env in loop._env_for_actor_thread)
 
 
 def test_bad_args():
   num_envs = 2
   env = CartPoleEnv()
   env_info = env_info_from_gymnasium(env, num_envs)
-  agent = RandomAgent(env_info.action_space.sample, 0)
+  agent = RandomAgent(env_info, env_info.action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
-    env, agent, num_envs, jax.random.PRNGKey(0), metric_writer=metric_writer, inference=True
+    env, agent, num_envs, jax.random.PRNGKey(0), metric_writer=metric_writer, actor_only=True
   )
-  agent_state = agent.new_state(None, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(None, jax.random.PRNGKey(0))
   with pytest.raises(ValueError, match="num_cycles"):
     loop.run(agent_state, 0, 10)
   with pytest.raises(ValueError, match="steps_per_cycle"):
@@ -122,14 +119,14 @@ def test_bad_metric_key():
   env_info = env_info_from_gymnasium(env, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
   # make the agent return a metric with a key that conflicts with a built-in metric.
-  agent = RandomAgent(env_info.action_space.sample, 1)
-  agent = dataclasses.replace(agent, _prng_metric_key=MetricKey.DURATION_SEC)
+  agent = RandomAgent(env_info, env_info.action_space.sample, 1)
+  agent = dataclasses.replace(agent, _opt_count_metric_key=MetricKey.DURATION_SEC)
 
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(env, agent, num_envs, next(key_gen), metric_writer=metric_writer)
   num_cycles = 1
   steps_per_cycle = 1
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   with pytest.raises(ConflictingMetricError):
     loop.run(agent_state, num_cycles, steps_per_cycle)
 
@@ -144,14 +141,14 @@ def test_continuous_action_space():
   assert isinstance(action_space, gymnax.environments.spaces.Box)
   assert isinstance(action_space.low, jax.Array)
   assert isinstance(action_space.high, jax.Array)
-  agent = RandomAgent(action_space.sample, 0)
+  agent = RandomAgent(env_info, action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
-    env, agent, num_envs, next(key_gen), metric_writer=metric_writer, inference=True
+    env, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=True
   )
   num_cycles = 1
   steps_per_cycle = 1
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   loop.run(agent_state, num_cycles, steps_per_cycle)
   for _, v in metric_writer.scalars.items():
     for k in v:
@@ -164,14 +161,14 @@ def test_observe_cycle():
   env_info = env_info_from_gymnasium(env, num_envs)
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
-  agent = RandomAgent(env_info.action_space.sample, 0)
+  agent = RandomAgent(env_info, env_info.action_space.sample, 0)
   metric_writer = MemoryWriter()
   num_cycles = 2
   steps_per_cycle = 3
 
-  def observe_cycle(cycle_result: CycleResult) -> Metrics:
-    assert cycle_result.trajectory.obs.shape[0] == num_envs
-    assert cycle_result.trajectory.obs.shape[1] == steps_per_cycle
+  def observe_cycle(trajectory: EnvStep, step_infos: dict) -> Metrics:
+    assert trajectory.obs.shape[0] == num_envs
+    assert trajectory.obs.shape[1] == steps_per_cycle
     return {"ran": True}
 
   loop = GymnasiumLoop(
@@ -180,10 +177,10 @@ def test_observe_cycle():
     num_envs,
     next(key_gen),
     metric_writer=metric_writer,
-    inference=True,
+    actor_only=True,
     observe_cycle=observe_cycle,
   )
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   loop.run(agent_state, num_cycles, steps_per_cycle)
   for _, v in metric_writer.scalars.items():
     assert v.get("ran", False)
@@ -196,11 +193,12 @@ def test_benchmark_gymnasium_inference():
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
   agent = simple_policy_gradient.SimplePolicyGradient(
+    env_info,
     simple_policy_gradient.Config(
-      max_step_state_history=100,
+      max_actor_state_history=100,
       optimizer=optax.adam(1e-3),
       discount=0.99,
-    )
+    ),
   )
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
@@ -209,7 +207,7 @@ def test_benchmark_gymnasium_inference():
     num_envs,
     next(key_gen),
     metric_writer=metric_writer,
-    inference=True,
+    actor_only=True,
     vectorization_mode="async",
   )
   assert isinstance(env_info.observation_space, Box)
@@ -218,10 +216,10 @@ def test_benchmark_gymnasium_inference():
     [env_info.observation_space.shape[0], 200, 200, 200, 200, 200, env_info.action_space.n],
     jax.random.PRNGKey(0),
   )
-  agent_state = agent.new_state(networks, env_info, jax.random.PRNGKey(0))
+  agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
   steps_per_cycle = 100
   result = loop.run(agent_state, 1, steps_per_cycle)  # warmup
-  assert result.agent_state.step.t == steps_per_cycle
+  assert result.agent_state.actor.t == steps_per_cycle
 
   start = time.monotonic()
   num_cycles = 2

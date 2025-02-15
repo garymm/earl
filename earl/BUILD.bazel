@@ -5,6 +5,7 @@ py_library(
     srcs = ["core.py"],
     visibility = ["//visibility:public"],
     deps = [
+        "//earl/utils:sharding",
         "@pypi//equinox",
         "@pypi//gymnasium",
         "@pypi//gymnax",

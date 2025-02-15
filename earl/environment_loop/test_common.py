@@ -25,7 +25,7 @@ def test_pixel_obs_to_video_observe_cycle_single_video():
     ),
     step_infos={},
   )
-  metrics = pixel_obs_to_video_observe_cycle(cycle_result)
+  metrics = pixel_obs_to_video_observe_cycle(cycle_result.trajectory, cycle_result.step_infos)
   assert len(metrics) == 1
   assert isinstance(metrics["video"], Video)
   assert metrics["video"].data.shape == (10, 64, 64, 3)
@@ -48,7 +48,7 @@ def test_pixel_obs_to_video_observe_cycle_multiple_videos():
     ),
     step_infos={},
   )
-  metrics = pixel_obs_to_video_observe_cycle(cycle_result)
+  metrics = pixel_obs_to_video_observe_cycle(cycle_result.trajectory, cycle_result.step_infos)
   assert len(metrics) == 2
   assert isinstance(metrics["video_0"], Video)
   assert isinstance(metrics["video_1"], Video)
@@ -75,7 +75,7 @@ def test_pixel_obs_to_video_observe_cycle_invalid_shape():
   )
   raised = False
   try:
-    pixel_obs_to_video_observe_cycle(cycle_result)
+    pixel_obs_to_video_observe_cycle(cycle_result.trajectory, cycle_result.step_infos)
   except ValueError as e:
     raised = True
     assert "Expected trajectory.obs to have shape" in str(e)
@@ -83,10 +83,10 @@ def test_pixel_obs_to_video_observe_cycle_invalid_shape():
 
 
 def test_multi_observe_cycle():
-  def observer1(cycle_result):
+  def observer1(trajectory, step_infos):
     return {"metric1": 1, "image1": Image(jnp.zeros((64, 64, 3)))}
 
-  def observer2(cycle_result):
+  def observer2(trajectory, step_infos):
     return {"metric2": 2, "video2": Video(jnp.zeros((10, 64, 64, 3)))}
 
   combined_observer = multi_observe_cycle([observer1, observer2])
@@ -100,7 +100,7 @@ def test_multi_observe_cycle():
     step_infos={},
   )
 
-  metrics = combined_observer(cycle_result)
+  metrics = combined_observer(cycle_result.trajectory, cycle_result.step_infos)
   assert len(metrics) == 4
   assert metrics["metric1"] == 1
   assert metrics["metric2"] == 2

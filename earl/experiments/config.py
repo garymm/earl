@@ -1,4 +1,5 @@
 import abc
+import dataclasses
 import enum
 import pathlib
 import typing
@@ -124,15 +125,21 @@ class ExperimentConfig(abc.ABC):
   def new_metric_writers(self) -> MetricWriters:
     return MetricWriters()
 
-  def jax_devices(self) -> list[jax.Device]:
+  def _jax_devices(self, devices: int | list[int] | AutoDeviceSelector) -> list[jax.Device]:
     local_devices = jax.local_devices()
-    if isinstance(self.devices, int):
-      return local_devices[self.devices : self.devices + 1]
-    elif isinstance(self.devices, list):
-      return [local_devices[i] for i in self.devices]
+    if isinstance(devices, int):
+      return local_devices[0:devices]
+    elif isinstance(devices, list):
+      return [local_devices[i] for i in devices]
     else:
-      assert self.devices == AutoDeviceSelector.ALL
+      assert devices == AutoDeviceSelector.ALL
       return local_devices
+
+  def jax_actor_devices(self) -> list[jax.Device]:
+    return self._jax_devices(self.actor_devices)
+
+  def jax_learner_devices(self) -> list[jax.Device]:
+    return self._jax_devices(self.learner_devices)
 
   num_eval_cycles: int
   """Number of cycles to evaluate the agent for. AgentState.inference will be set to
@@ -164,7 +171,9 @@ class ExperimentConfig(abc.ABC):
   If num_eval_cycles is 0, CheckpointManager.save(num_train_cycles*steps_per_cycle) will be
   called after training."""
 
-  devices: int | list[int] | AutoDeviceSelector = 0
+  learner_devices: int | list[int] | AutoDeviceSelector = dataclasses.field(
+    default_factory=lambda: [0]
+  )
   """Which devices to use for data parallel training.
 
   int means the first <n> local devices.
@@ -172,6 +181,15 @@ class ExperimentConfig(abc.ABC):
   list[int] means the local devices with the given indices.
 
   "all" means all of jax.local_devices().
+  """
+
+  actor_devices: int | list[int] | AutoDeviceSelector = dataclasses.field(
+    default_factory=lambda: [0]
+  )
+  """Which devices to use for the actor threads.
+
+  Only applies to GymnasiumLoop.
+  Values interprted the same way as learner_devices.
   """
 
   # explititly define this so we can change the type of env and
@@ -188,7 +206,8 @@ class ExperimentConfig(abc.ABC):
     # env is not required to be a subclass of EnvConfig.
     env: typing.Any,
     checkpoint: CheckpointConfig | None = None,
-    devices: int | list[int] | AutoDeviceSelector = 0,
+    actor_devices: int | list[int] | AutoDeviceSelector = 0,
+    learner_devices: int | list[int] | AutoDeviceSelector = 0,
   ) -> None:
     self.num_eval_cycles = num_eval_cycles
     self.num_train_cycles = num_train_cycles
@@ -197,7 +216,8 @@ class ExperimentConfig(abc.ABC):
     self.steps_per_cycle = steps_per_cycle
     self.env = typing.cast(EnvConfig, env)
     self.checkpoint = checkpoint
-    self.devices = devices
+    self.actor_devices = actor_devices
+    self.learner_devices = learner_devices
     super().__init__()
     self.__post_init__()
 

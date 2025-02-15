@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import time
 import typing
@@ -18,10 +19,10 @@ from earl.core import (
   Agent,
   AgentState,
   EnvStep,
+  _ActorState,
   _ExperienceState,
   _Networks,
   _OptState,
-  _StepState,
 )
 from earl.environment_loop import (
   ArrayMetrics,
@@ -29,7 +30,6 @@ from earl.environment_loop import (
   ObserveCycle,
   Result,
   State,
-  StepCarry,
   no_op_observe_cycle,
 )
 from earl.environment_loop._common import (
@@ -39,24 +39,37 @@ from earl.environment_loop._common import (
   to_num_envs_first,
 )
 from earl.metric_key import MetricKey
-from earl.utils.eqx_filter import filter_scan  # TODO: remove deps on research
+from earl.utils.eqx_filter import filter_scan
+from earl.utils.sharding import pytree_get_index_0
 
 
 @eqx.filter_grad(has_aux=True)
 def _loss_for_cycle_grad(
-  nets_yes_grad, nets_no_grad, other_agent_state, agent: Agent
+  nets_yes_grad, nets_no_grad, opt_state, experience_state, agent: Agent
 ) -> tuple[Scalar, ArrayMetrics]:
   # this is a free function so we don't have to pass self as first arg, since filter_grad
   # takes gradient with respect to the first arg.
-  agent_state = dataclasses.replace(
-    other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad)
-  )
-  loss, metrics = agent.loss(agent_state)
+  nets = eqx.combine(nets_yes_grad, nets_no_grad)
+  loss, metrics = agent.loss(nets, opt_state, experience_state)
   raise_if_metric_conflicts(metrics)
   # inside jit, return values are guaranteed to be arrays
   mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
   mutable_metrics[MetricKey.LOSS] = loss
   return loss, mutable_metrics
+
+
+class StepCarry(eqx.Module, typing.Generic[_ActorState]):
+  env_step: EnvStep
+  env_state: EnvState
+  actor_state: _ActorState
+  key: PRNGKeyArray
+  total_reward: Scalar
+  total_dones: Scalar
+  """Number of steps in current episode for each environment."""
+  episode_steps: jax.Array
+  complete_episode_length_sum: Scalar
+  complete_episode_count: Scalar
+  action_counts: jax.Array
 
 
 class GymnaxLoop:
@@ -83,7 +96,7 @@ class GymnaxLoop:
     key: PRNGKeyArray,
     metric_writer: MetricWriter,
     observe_cycle: ObserveCycle = no_op_observe_cycle,
-    inference: bool = False,
+    actor_only: bool = False,
     assert_no_recompile: bool = True,
     devices: typing.Sequence[jax.Device] | None = None,
   ):
@@ -99,7 +112,7 @@ class GymnaxLoop:
         metric_writer: The metric writer to write metrics to.
         observe_cycle: A function that takes a CycleResult representing a final environment state
             and a trajectory of length steps_per_cycle and runs any custom logic on it.
-        inference: If False, agent.update_for_cycle() will not be called.
+        actor_only: If True, agent.update_for_cycle() will not be called.
         assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         devices: sequence of devices for data parallelism.
             Each device will run num_envs, and the gradients will be averaged across devices.
@@ -117,18 +130,17 @@ class GymnaxLoop:
     self._key = key
     self._metric_writer = metric_writer
     self._observe_cycle = observe_cycle
-    self._inference = inference
+    self._actor_only = actor_only
     self._devices = devices or jax.local_devices()[0:1]
-    _run_cycle_and_update = self._run_cycle_and_update
     # max_traces=2 because of https://github.com/patrick-kidger/equinox/issues/932
     if assert_no_recompile:
-      _run_cycle_and_update = eqx.debug.assert_max_traces(_run_cycle_and_update, max_traces=2)
-      self._run_cycle_and_update = eqx.filter_pmap(
-        _run_cycle_and_update,
-        donate="warn",
-        axis_name=self._PMAP_AXIS_NAME,
-        devices=self._devices,  # pyright: ignore[reportCallIssue]
-      )
+      self._act_and_learn = eqx.debug.assert_max_traces(self._act_and_learn, max_traces=2)
+    self._act_and_learn = eqx.filter_pmap(
+      self._act_and_learn,
+      donate="warn",
+      axis_name=self._PMAP_AXIS_NAME,
+      devices=self._devices,  # pyright: ignore[reportCallIssue]
+    )
 
   def reset_env(self) -> tuple[EnvState, EnvStep]:
     """Resets the environment.
@@ -155,12 +167,12 @@ class GymnaxLoop:
 
   def run(
     self,
-    state: State[_Networks, _OptState, _ExperienceState, _StepState]
-    | AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    state: State[_Networks, _OptState, _ExperienceState, _ActorState]
+    | AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     num_cycles: int,
     steps_per_cycle: int,
     print_progress: bool = True,
-  ) -> Result[_Networks, _OptState, _ExperienceState, _StepState]:
+  ) -> Result[_Networks, _OptState, _ExperienceState, _ActorState]:
     """Runs the agent for num_cycles cycles, each with steps_per_cycle steps.
 
     Args:
@@ -169,8 +181,8 @@ class GymnaxLoop:
             Callers can pass in an AgentState, which is equivalent to passing in a LoopState
             with the same agent_state and all other fields set to their default values.
             state.agent_state will be replaced with
-            `equinox.nn.inference_mode(agent_state, value=inference)` before running, where
-            `inference` is the value that was passed into GymnaxLoop.__init__().
+            `equinox.nn.inference_mode(agent_state, value=actor_only)` before running, where
+            `actor_only` is the value that was passed into GymnaxLoop.__init__().
         num_cycles: The number of cycles to run.
         steps_per_cycle: The number of steps to run in each cycle.
         print_progress: Whether to print progress to std out.
@@ -192,7 +204,7 @@ class GymnaxLoop:
     if isinstance(state, AgentState):
       state = State(state)
 
-    agent_state = eqx.nn.inference_mode(state.agent_state, value=self._inference)
+    agent_state = eqx.nn.inference_mode(state.agent_state, value=self._actor_only)
     agent_state = self.replicate(agent_state)
 
     if state.env_state is None:
@@ -224,14 +236,12 @@ class GymnaxLoop:
         EnvState,
         jax.tree.map(lambda x: x.astype(x.dtype) if isinstance(x, jax.Array) else x, env_state),
       )
-      cycle_result = self._run_cycle_and_update(
-        agent_state, env_state, env_step, key, steps_per_cycle
-      )
+      cycle_result = self._act_and_learn(agent_state, env_state, env_step, key, steps_per_cycle)
 
-      cycle_result_device_0 = jax.tree.map(
-        lambda x: x[0] if isinstance(x, jax.Array) else x, cycle_result
+      cycle_result_device_0 = pytree_get_index_0(cycle_result)
+      observe_cycle_metrics = self._observe_cycle(
+        cycle_result_device_0.trajectory, cycle_result_device_0.step_infos
       )
-      observe_cycle_metrics = self._observe_cycle(cycle_result_device_0)
       if cycle_num == 0:  # Could be slow if lots of metrics, so just cycle 0
         raise_if_metric_conflicts(observe_cycle_metrics)
 
@@ -256,22 +266,22 @@ class GymnaxLoop:
       agent_state, env_state, env_step, step_num_metric_start + num_cycles * steps_per_cycle
     )
 
-  def _off_policy_update(
-    self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState], _
-  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _StepState], ArrayMetrics]:
+  def _off_policy_optim(
+    self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], _
+  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
     nets_grad, metrics = _loss_for_cycle_grad(
-      nets_yes_grad, nets_no_grad, dataclasses.replace(agent_state, nets=None), self._agent
+      nets_yes_grad, nets_no_grad, agent_state.opt, agent_state.experience, self._agent
     )
     nets_grad = jax.lax.pmean(nets_grad, axis_name=self._PMAP_AXIS_NAME)
     grad_means = pytree_leaf_means(nets_grad, "grad_mean")
     metrics.update(grad_means)
-    agent_state = self._agent.optimize_from_grads(agent_state, nets_grad)
-    return agent_state, metrics
+    nets, opt_state = self._agent.optimize_from_grads(agent_state.nets, agent_state.opt, nets_grad)
+    return dataclasses.replace(agent_state, nets=nets, opt=opt_state), metrics
 
-  def _run_cycle_and_update(
+  def _act_and_learn(
     self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     env_state: EnvState,
     env_step: EnvStep,
     key: PRNGKeyArray,
@@ -280,24 +290,30 @@ class GymnaxLoop:
     # this is a nested function so we don't have to pass self as first arg, since filter_grad
     # takes gradient with respect to the first arg.
     @eqx.filter_grad(has_aux=True)
-    def _run_cycle_and_loss_grad(
+    def _act_and_loss_grad(
       nets_yes_grad: PyTree,
       nets_no_grad: PyTree,
-      other_agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+      other_agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
       env_state: EnvState,
       env_step: EnvStep,
       num_steps: int,
       key: PRNGKeyArray,
     ) -> tuple[Scalar, CycleResult]:
       agent_state = dataclasses.replace(
-        other_agent_state, nets=eqx.combine(nets_yes_grad, nets_no_grad)
+        other_agent_state,
+        nets=eqx.combine(nets_yes_grad, nets_no_grad),
+        actor=self._agent.prepare_for_actor_cycle(other_agent_state.actor),
       )
-      cycle_result = self._run_cycle(agent_state, env_state, env_step, num_steps, key)
+      actor_state_pre = copy.deepcopy(agent_state.actor)
+      cycle_result = self._actor_cycle(agent_state, env_state, env_step, num_steps, key)
       experience_state = self._agent.update_experience(
-        cycle_result.agent_state, cycle_result.trajectory
+        cycle_result.agent_state.experience,
+        actor_state_pre,
+        cycle_result.agent_state.actor,
+        cycle_result.trajectory,
       )
       agent_state = dataclasses.replace(cycle_result.agent_state, experience=experience_state)
-      loss, metrics = self._agent.loss(agent_state)
+      loss, metrics = self._agent.loss(agent_state.nets, agent_state.opt, agent_state.experience)
       raise_if_metric_conflicts(metrics)
       # inside jit, return values are guaranteed to be arrays
       mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
@@ -307,10 +323,10 @@ class GymnaxLoop:
         cycle_result, metrics=mutable_metrics, agent_state=agent_state
       )
 
-    if not self._inference and not self._agent.num_off_policy_optims_per_cycle():
+    if not self._actor_only and not self._agent.num_off_policy_optims_per_cycle():
       # On-policy update. Calculate the gradient through the entire cycle.
       nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
-      nets_grad, cycle_result = _run_cycle_and_loss_grad(
+      nets_grad, cycle_result = _act_and_loss_grad(
         nets_yes_grad,
         nets_no_grad,
         dataclasses.replace(agent_state, nets=None),
@@ -322,20 +338,31 @@ class GymnaxLoop:
       nets_grad = jax.lax.pmean(nets_grad, axis_name=self._PMAP_AXIS_NAME)
       grad_means = pytree_leaf_means(nets_grad, "grad_mean")
       cycle_result.metrics.update(grad_means)
-      agent_state = self._agent.optimize_from_grads(cycle_result.agent_state, nets_grad)
+      nets, opt_state = self._agent.optimize_from_grads(
+        cycle_result.agent_state.nets, cycle_result.agent_state.opt, nets_grad
+      )
+      agent_state = dataclasses.replace(cycle_result.agent_state, nets=nets, opt=opt_state)
     else:
-      cycle_result = self._run_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
+      agent_state = dataclasses.replace(
+        agent_state,
+        actor=self._agent.prepare_for_actor_cycle(agent_state.actor),
+      )
+      actor_state_pre = copy.deepcopy(agent_state.actor)
+      cycle_result = self._actor_cycle(agent_state, env_state, env_step, steps_per_cycle, key)
       agent_state = cycle_result.agent_state
-      if not self._inference:
+      if not self._actor_only:
         experience_state = self._agent.update_experience(
-          cycle_result.agent_state, cycle_result.trajectory
+          cycle_result.agent_state.experience,
+          actor_state_pre,
+          cycle_result.agent_state.actor,
+          cycle_result.trajectory,
         )
         agent_state = dataclasses.replace(agent_state, experience=experience_state)
 
     metrics = cycle_result.metrics
-    if not self._inference and self._agent.num_off_policy_optims_per_cycle():
+    if not self._actor_only and self._agent.num_off_policy_optims_per_cycle():
       agent_state, off_policy_metrics = filter_scan(
-        self._off_policy_update,
+        self._off_policy_optim,
         init=agent_state,
         xs=None,
         length=self._agent.num_off_policy_optims_per_cycle(),
@@ -354,9 +381,9 @@ class GymnaxLoop:
       cycle_result.step_infos,
     )
 
-  def _run_cycle(
+  def _actor_cycle(
     self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState],
+    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
     env_state: EnvState,
     env_step: EnvStep,
     num_steps: int,
@@ -365,12 +392,10 @@ class GymnaxLoop:
     """Runs self._agent and self._env for num_steps."""
 
     def scan_body(
-      inp: StepCarry[_StepState], _
-    ) -> tuple[StepCarry[_StepState], tuple[EnvStep, dict[Any, Any]]]:
-      agent_state_for_step = dataclasses.replace(agent_state, step=inp.step_state)
-
-      agent_step = self._agent.step(agent_state_for_step, inp.env_step)
-      action = agent_step.action
+      inp: StepCarry[_ActorState], _
+    ) -> tuple[StepCarry[_ActorState], tuple[EnvStep, dict[Any, Any]]]:
+      action_and_state = self._agent.act(inp.actor_state, agent_state.nets, inp.env_step)
+      action = action_and_state.action
       if isinstance(self._action_space, Discrete):
         one_hot_actions = jax.nn.one_hot(
           action, self._action_space.n, dtype=inp.action_counts.dtype
@@ -402,7 +427,7 @@ class GymnaxLoop:
         StepCarry(
           env_step=next_timestep,
           env_state=env_state,
-          step_state=agent_step.state,
+          actor_state=action_and_state.state,
           key=key,
           total_reward=total_reward,
           total_dones=total_dones,
@@ -426,7 +451,7 @@ class GymnaxLoop:
       init=StepCarry(
         env_step=env_step,
         env_state=env_state,
-        step_state=agent_state.step,
+        actor_state=agent_state.actor,
         key=key,
         total_reward=jnp.array(0.0),
         total_dones=jnp.array(0, dtype=jnp.uint32),
@@ -439,7 +464,7 @@ class GymnaxLoop:
       length=num_steps,
     )
 
-    agent_state = dataclasses.replace(agent_state, step=final_carry.step_state)
+    agent_state = dataclasses.replace(agent_state, actor=final_carry.actor_state)
     # mean across complete episodes
     complete_episode_length_mean = jnp.where(
       final_carry.complete_episode_count > 0,

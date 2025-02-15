@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from gymnax import EnvState
 from jax_loop_utils.metric_writers.interface import Scalar as ScalarMetric
-from jaxtyping import PRNGKeyArray, PyTree, Scalar
+from jaxtyping import PRNGKeyArray, PyTree
 
 from earl.core import (
   AgentState,
@@ -18,10 +18,10 @@ from earl.core import (
   Image,
   Metrics,
   Video,
+  _ActorState,
   _ExperienceState,
   _Networks,
   _OptState,
-  _StepState,
 )
 from earl.metric_key import MetricKey
 
@@ -61,29 +61,15 @@ class CycleResult(eqx.Module):
 
 
 class ObserveCycle(Protocol):
-  def __call__(self, cycle_result: CycleResult) -> Metrics: ...
+  def __call__(self, trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics: ...
 
-  """A function that takes a CycleResult representing the final state after a cycle of environment
-  steps and produces a set of metrics using custom logic specific to the environment.
+  """A function that takes a trajectory and step_infos and produces a set of metrics using
+  custom logic specific to the environment.
   """
 
 
-def no_op_observe_cycle(cycle_result: CycleResult) -> Metrics:
+def no_op_observe_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
   return {}
-
-
-class StepCarry(eqx.Module, Generic[_StepState]):
-  env_step: EnvStep
-  env_state: EnvState
-  step_state: _StepState
-  key: PRNGKeyArray
-  total_reward: Scalar
-  total_dones: Scalar
-  """Number of steps in current episode for each environment."""
-  episode_steps: jax.Array
-  complete_episode_length_sum: Scalar
-  complete_episode_count: Scalar
-  action_counts: jax.Array
 
 
 def raise_if_metric_conflicts(metrics: Mapping):
@@ -122,10 +108,10 @@ def pytree_leaf_means(pytree: PyTree, prefix: str) -> dict[str, jax.Array]:
 
 
 @dataclasses.dataclass(frozen=True)
-class State(Generic[_Networks, _OptState, _ExperienceState, _StepState]):
-  agent_state: AgentState[_Networks, _OptState, _ExperienceState, _StepState]
+class State(Generic[_Networks, _OptState, _ExperienceState, _ActorState]):
+  agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState]
   env_state: EnvState | None = None
-  env_step: EnvStep | None = None
+  env_step: EnvStep | list[EnvStep] | None = None
   step_num: int = 0
 
 
@@ -139,31 +125,13 @@ Args:
 
 
 @dataclasses.dataclass(frozen=True)
-class Result(State[_Networks, _OptState, _ExperienceState, _StepState]):
+class Result(State[_Networks, _OptState, _ExperienceState, _ActorState]):
   """A State but with all fields guaranteed to be not None."""
 
   # Note: defaults are just to please the type checker, since the base class has defaults.
   # We should not actually use the defaults.
-  env_state: EnvState = EnvState(0)
-  env_step: EnvStep = dataclasses.field(
+  env_step: EnvStep | list[EnvStep] = dataclasses.field(
     default_factory=lambda: EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0))
-  )
-
-
-def result_to_cycle_result(result: Result) -> CycleResult:
-  """Converts a Result to a CycleResult.
-
-  Result does not contain all the fields that CycleResult does, namely key, metrics, trajectory, and
-  step_infos. This function fills in the missing fields with dummy values.
-  """
-  return CycleResult(
-    agent_state=result.agent_state,
-    env_state=result.env_state,
-    env_step=result.env_step,
-    key=jax.random.PRNGKey(0),
-    metrics={},
-    trajectory=EnvStep(jnp.array(0), jnp.array(0), jnp.array(0), jnp.array(0)),
-    step_infos={},
   )
 
 
@@ -223,8 +191,8 @@ def extract_metrics(
   return MetricsByType(scalar=scalar_metrics, image=image_metrics, video=video_metrics)
 
 
-def pixel_obs_to_video_observe_cycle(cycle_result: CycleResult) -> Metrics:
-  obs = cycle_result.trajectory.obs
+def pixel_obs_to_video_observe_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
+  obs = trajectory.obs
   if len(obs.shape) not in (4, 5):
     raise ValueError(
       f"Expected trajectory.obs to have shape (T, H, W, C) or (B, T, H, W, C),got {obs.shape}"
@@ -236,7 +204,9 @@ def pixel_obs_to_video_observe_cycle(cycle_result: CycleResult) -> Metrics:
 
 
 def multi_observe_cycle(observers: Sequence[ObserveCycle]) -> ObserveCycle:
-  def _multi_observe_cycle(cycle_result: CycleResult) -> Metrics:
-    return dict(item for observe_cycle in observers for item in observe_cycle(cycle_result).items())
+  def _multi_observe_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
+    return dict(
+      item for observe_cycle in observers for item in observe_cycle(trajectory, step_infos).items()
+    )
 
   return _multi_observe_cycle
