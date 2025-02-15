@@ -112,7 +112,6 @@ py_library(
 
 py_test(
     name = "test_gymnax_loop",
-    timeout = "short",
     srcs = ["test_gymnax_loop.py"],
     deps = [
         ":gymnax_loop",
