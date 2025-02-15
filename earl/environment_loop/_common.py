@@ -61,14 +61,14 @@ class CycleResult(eqx.Module):
 
 
 class ObserveCycle(Protocol):
-  def __call__(self, cycle_result: CycleResult) -> Metrics: ...
+  def __call__(self, trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics: ...
 
-  """A function that takes a CycleResult representing the final state after a cycle of environment
-  steps and produces a set of metrics using custom logic specific to the environment.
+  """A function that takes a trajectory and step_infos and produces a set of metrics using
+  custom logic specific to the environment.
   """
 
 
-def no_op_observe_cycle(cycle_result: CycleResult) -> Metrics:
+def no_op_observe_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
   return {}
 
 
@@ -191,8 +191,8 @@ def extract_metrics(
   return MetricsByType(scalar=scalar_metrics, image=image_metrics, video=video_metrics)
 
 
-def pixel_obs_to_video_observe_cycle(cycle_result: CycleResult) -> Metrics:
-  obs = cycle_result.trajectory.obs
+def pixel_obs_to_video_observe_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
+  obs = trajectory.obs
   if len(obs.shape) not in (4, 5):
     raise ValueError(
       f"Expected trajectory.obs to have shape (T, H, W, C) or (B, T, H, W, C),got {obs.shape}"
@@ -204,7 +204,9 @@ def pixel_obs_to_video_observe_cycle(cycle_result: CycleResult) -> Metrics:
 
 
 def multi_observe_cycle(observers: Sequence[ObserveCycle]) -> ObserveCycle:
-  def _multi_observe_cycle(cycle_result: CycleResult) -> Metrics:
-    return dict(item for observe_cycle in observers for item in observe_cycle(cycle_result).items())
+  def _multi_observe_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
+    return dict(
+      item for observe_cycle in observers for item in observe_cycle(trajectory, step_infos).items()
+    )
 
   return _multi_observe_cycle

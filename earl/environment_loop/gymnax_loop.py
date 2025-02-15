@@ -40,6 +40,7 @@ from earl.environment_loop._common import (
 )
 from earl.metric_key import MetricKey
 from earl.utils.eqx_filter import filter_scan
+from earl.utils.sharding import pytree_get_index_0
 
 
 @eqx.filter_grad(has_aux=True)
@@ -237,10 +238,10 @@ class GymnaxLoop:
       )
       cycle_result = self._act_and_learn(agent_state, env_state, env_step, key, steps_per_cycle)
 
-      cycle_result_device_0 = jax.tree.map(
-        lambda x: x[0] if isinstance(x, jax.Array) else x, cycle_result
+      cycle_result_device_0 = pytree_get_index_0(cycle_result)
+      observe_cycle_metrics = self._observe_cycle(
+        cycle_result_device_0.trajectory, cycle_result_device_0.step_infos
       )
-      observe_cycle_metrics = self._observe_cycle(cycle_result_device_0)
       if cycle_num == 0:  # Could be slow if lots of metrics, so just cycle 0
         raise_if_metric_conflicts(observe_cycle_metrics)
 

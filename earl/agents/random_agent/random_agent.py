@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 import jax
@@ -51,7 +51,7 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
     return ActionAndState(actions, ActorState(key, actor_state.t + 1))
 
   def _partition_for_grad(self, nets: None) -> tuple[None, None]:
-    return None, None
+    return None, nets
 
   def _loss(
     self, nets: None, opt_state: OptState, experience_state: None
@@ -62,7 +62,7 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
     self, nets: None, opt_state: OptState, nets_grads: PyTree
   ) -> tuple[None, OptState]:
     assert opt_state.opt_count is not None
-    return None, OptState(opt_count=opt_state.opt_count + 1)
+    return nets, OptState(opt_count=opt_state.opt_count + 1)
 
   def _update_experience(
     self,
@@ -80,3 +80,11 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
   def _prepare_for_actor_cycle(self, actor_state: ActorState) -> ActorState:
     """Resets the random key."""
     return actor_state
+
+  def shard_actor_state(
+    self, actor_state: ActorState, learner_devices: Sequence[jax.Device]
+  ) -> ActorState:
+    return ActorState(
+      key=jax.device_put_replicated(actor_state.key, learner_devices),
+      t=jax.device_put_replicated(actor_state.t, learner_devices),
+    )

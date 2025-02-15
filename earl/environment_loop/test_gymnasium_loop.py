@@ -13,8 +13,7 @@ from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
 from earl.agents.random_agent.random_agent import RandomAgent
 from earl.agents.simple_policy_gradient import simple_policy_gradient
-from earl.core import ConflictingMetricError, Metrics, env_info_from_gymnasium
-from earl.environment_loop import CycleResult
+from earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnasium
 from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from earl.metric_key import MetricKey
 from earl.utils.prng import keygen
@@ -167,9 +166,9 @@ def test_observe_cycle():
   num_cycles = 2
   steps_per_cycle = 3
 
-  def observe_cycle(cycle_result: CycleResult) -> Metrics:
-    assert cycle_result.trajectory.obs.shape[0] == num_envs
-    assert cycle_result.trajectory.obs.shape[1] == steps_per_cycle
+  def observe_cycle(trajectory: EnvStep, step_infos: dict) -> Metrics:
+    assert trajectory.obs.shape[0] == num_envs
+    assert trajectory.obs.shape[1] == steps_per_cycle
     return {"ran": True}
 
   loop = GymnasiumLoop(

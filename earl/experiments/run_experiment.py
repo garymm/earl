@@ -5,6 +5,7 @@ from typing import Any
 
 import equinox as eqx
 import gymnax
+import gymnax.environments.spaces
 import jax
 import orbax.checkpoint as ocp
 from gymnasium.core import Env as GymnasiumEnv
@@ -35,11 +36,16 @@ def _checkpoint_save_args(
   # StandardSave/Restore has special handling for arrays, and when we use PyTreeSave/Restore
   # we get warnings about missing sharding metadata. Possibly a bug in orbax that we should file.
   agent_arrays, agent_non_arrays = eqx.partition(agent_state, eqx.is_array)
-  _, agent_non_callable = eqx.partition(agent, lambda x: isinstance(x, Callable))
+  _, agent_checkpointable = eqx.partition(
+    # TODO: spaces are in the agent.env_info. Ideally we would save and restore them.
+    # neeeds a custom type handler.
+    agent,
+    lambda x: isinstance(x, Callable | gymnax.environments.spaces.Space),
+  )
   env_state = state.env_state or gymnax.EnvState(time=0)
   env_arrays, env_non_arrays = eqx.partition(env_state, eqx.is_array)
   return ocp.args.Composite(
-    agent=ocp.args.PyTreeSave(agent_non_callable),  # type: ignore[call-arg]
+    agent=ocp.args.PyTreeSave(agent_checkpointable),  # type: ignore[call-arg]
     agent_state_arrays=ocp.args.StandardSave(agent_arrays),  # type: ignore[call-arg]
     agent_state_non_arrays=ocp.args.PyTreeSave(agent_non_arrays),  # type: ignore[call-arg]
     env_params=ocp.args.PyTreeSave(env_params),  # type: ignore[call-arg]

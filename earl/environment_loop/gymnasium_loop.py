@@ -22,6 +22,8 @@ from jax_loop_utils.metric_writers.interface import MetricWriter
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 from tqdm import tqdm
 
+from earl.utils.sharding import pytree_get_index_0, shard_along_axis_0
+
 try:
   import nvtx  # pyright: ignore[reportMissingImports]
 
@@ -154,7 +156,11 @@ class _ActorThread(threading.Thread):
     super().__init__()
     self._loop = loop
     self._env = env
-    if device == learner_devices:
+    if (
+      learner_devices == [device]
+      or learner_devices[0].platform == "cpu"
+      and device.platform == "cpu"
+    ):
       self._actor_state = copy.deepcopy(actor_state)
     else:
       self._actor_state = _filter_device_put(actor_state, device)
@@ -183,20 +189,28 @@ class _ActorThread(threading.Thread):
         cycle_result.env_step,
         cycle_result.key,
       )
+
       if self._learner_devices == [self._device]:
+        # when the actor and learner devices are the same, sharding does not copy,
+        # but we need to copy because the agent state will be donated in the next cycle.
         cycle_result = dataclasses.replace(
           cycle_result, agent_state=copy.deepcopy(self._actor_state)
         )
-      else:
-        actor_state_pre = self._loop._agent.shard_actor_state(
-          actor_state_pre, self._learner_devices
-        )
-        actor_state_post = self._loop._agent.shard_actor_state(
-          cycle_result.agent_state, self._learner_devices
-        )
-        cycle_result = dataclasses.replace(
-          cycle_result, agent_state=actor_state_post, trajectory=cycle_result.trajectory
-        )
+
+      actor_state_pre = self._loop._agent.shard_actor_state(actor_state_pre, self._learner_devices)
+      actor_state_post = self._loop._agent.shard_actor_state(
+        cycle_result.agent_state, self._learner_devices
+      )
+      trajectory = jax.tree.map(
+        lambda x: shard_along_axis_0(x, self._learner_devices), cycle_result.trajectory
+      )
+      step_infos = jax.tree.map(
+        lambda x: shard_along_axis_0(x, self._learner_devices), cycle_result.step_infos
+      )
+      cycle_result = dataclasses.replace(
+        cycle_result, agent_state=actor_state_post, trajectory=trajectory, step_infos=step_infos
+      )
+
       experience = _ActorExperience(actor_state_pre=actor_state_pre, cycle_result=cycle_result)
       self._loop._experience_q.put(experience)
       if self._fake_thread:
@@ -243,6 +257,7 @@ class GymnasiumLoop:
   """
 
   _NUM_ACTOR_THREADS = 2
+  _PMAP_AXIS_NAME = "learner_device"
 
   def __init__(
     self,
@@ -313,14 +328,25 @@ class GymnasiumLoop:
     self._action_space = env_info.action_space
     self._example_action = jax.vmap(self._action_space.sample)(sample_key)
     self._agent = agent
+    self._agent_update_experience = eqx.filter_pmap(
+      self._agent.update_experience,
+      axis_name=self._PMAP_AXIS_NAME,
+      devices=self._learner_devices,  # pyright: ignore[reportCallIssue]
+    )
     self._num_envs = num_envs
     self._key = key
     self._metric_writer: MetricWriter = metric_writer
     self._observe_cycle = observe_cycle
     self._actor_only = actor_only
     if assert_no_recompile:
-      self._learn = eqx.debug.assert_max_traces(self._learn, max_traces=1)
-    self._learn = eqx.filter_jit(self._learn, donate="warn")
+      # max_traces=2 because of https://github.com/patrick-kidger/equinox/issues/932
+      self._learn = eqx.debug.assert_max_traces(self._learn, max_traces=2)
+    self._learn = eqx.filter_pmap(
+      self._learn,
+      donate="warn",
+      axis_name=self._PMAP_AXIS_NAME,
+      devices=self._learner_devices,  # pyright: ignore[reportCallIssue]
+    )
 
     if assert_no_recompile:
       self._actor_cycle_bookkeeping = eqx.debug.assert_max_traces(
@@ -388,9 +414,7 @@ class GymnasiumLoop:
       state = State(state)
 
     agent_state = eqx.nn.inference_mode(state.agent_state, value=self._actor_only)
-    # everything needs to start on the learner device
     agent_state = self.replicate(agent_state)
-    key = jax.random.split(self._key, len(self._learner_devices))
 
     step_num_metric_start = state.step_num
     env_steps = state.env_step or self.reset_env()
@@ -404,8 +428,11 @@ class GymnasiumLoop:
 
     self._actor_threads = []
     envs = self._env_for_actor_thread.copy()
+    nets_device_0 = jax.tree.map(
+      lambda x: x[0] if isinstance(x, jax.Array) else x, agent_state.nets
+    )
     for device in self._actor_devices:
-      self._networks_for_actor_device[device] = _filter_device_put(agent_state.nets, device)
+      self._networks_for_actor_device[device] = _filter_device_put(nets_device_0, device)
       # 2 actor threads per device results in higher throughput
       # since one thread can be stepping the environment while the other is
       # getting actions from the agent.
@@ -437,29 +464,34 @@ class GymnasiumLoop:
         except queue.Empty:
           break
 
-      # TODO: learner should not need to know about actor state
       agent_state = dataclasses.replace(
-        agent_state, actor=actor_experiences[-1].cycle_result.agent_state
+        agent_state,
+        # Not ideal. See comment above where we pass actor state to the actor thread.
+        actor=pytree_get_index_0(actor_experiences[-1].cycle_result.agent_state),
       )
       cycle_result = actor_experiences[-1].cycle_result
       if self._actor_only:
         learn_duration = 0
-        metrics = cycle_result.metrics
       else:
-        with jax.default_device(self._learner_device):
-          while actor_experiences:
-            actor_experience = actor_experiences.pop()
-            # TODO: do this in parallel across learner devices
-            experience_state = self._agent.update_experience(
-              agent_state.experience,
-              actor_experience.cycle_result.trajectory,
-              actor_experience.actor_state_pre,
-              actor_experience.cycle_result.agent_state,
-            )
-            agent_state = dataclasses.replace(agent_state, experience=experience_state)
-          del actor_experiences
-          # TODO: merge metrics from all actor experiences
-          agent_state, metrics = self._learn(agent_state, cycle_result.metrics)
+        while actor_experiences:
+          actor_experience = actor_experiences.pop()
+          experience_state = self._agent_update_experience(
+            agent_state.experience,
+            actor_experience.cycle_result.trajectory,
+            actor_experience.actor_state_pre,
+            actor_experience.cycle_result.agent_state,
+          )
+          agent_state = dataclasses.replace(agent_state, experience=experience_state)
+        del actor_experiences
+        # TODO: merge metrics from all actor experiences
+        nets, opt_state, experience_state, metrics = self._learn(
+          agent_state.nets, agent_state.opt, agent_state.experience
+        )
+        agent_state = dataclasses.replace(
+          agent_state, nets=nets, opt=opt_state, experience=experience_state
+        )
+        metrics_device_0 = {k: v[0] for k, v in metrics.items()}
+        cycle_result.metrics.update(metrics_device_0)
         learn_duration = time.monotonic() - cycle_start - actor_wait_duration
         if cycle_num > 0 and actor_wait_duration > 5 * learn_duration:
           _logger.warning(
@@ -471,14 +503,16 @@ class GymnasiumLoop:
           for device in self._networks_for_actor_device:
             self._networks_for_actor_device[device] = _filter_device_put(agent_state.nets, device)
 
-      observe_cycle_metrics = self._observe_cycle(cycle_result)
+      step_infos_device_0 = pytree_get_index_0(cycle_result.step_infos)
+      trajectory_device_0 = pytree_get_index_0(cycle_result.trajectory)
+      observe_cycle_metrics = self._observe_cycle(trajectory_device_0, step_infos_device_0)
 
       # Could potentially be very slow if there are lots
       # of metrics to compare, so only do it once.
       if cycle_num == 0:
         self._raise_if_metric_conflicts(observe_cycle_metrics)
 
-      metrics_by_type = extract_metrics(metrics, observe_cycle_metrics)
+      metrics_by_type = extract_metrics(cycle_result.metrics, observe_cycle_metrics)
       metrics_by_type.scalar[MetricKey.DURATION_SEC] = time.monotonic() - cycle_start
       metrics_by_type.scalar[MetricKey.ACTOR_WAIT_DURATION_SEC] = actor_wait_duration
       metrics_by_type.scalar[MetricKey.LEARN_DURATION_SEC] = learn_duration
@@ -498,38 +532,42 @@ class GymnasiumLoop:
     )
 
   def _off_policy_optim(
-    self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], _
-  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
-    nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
+    self, states: tuple[_Networks, _OptState, _ExperienceState], _
+  ) -> tuple[tuple[_Networks, _OptState, _ExperienceState], ArrayMetrics]:
+    nets, opt_state, experience_state = states
+    nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(nets)
     grad, metrics = _loss_for_cycle_grad(
       nets_yes_grad,
       nets_no_grad,
-      agent_state.opt,
-      agent_state.experience,
+      opt_state,
+      experience_state,
       self._agent,
       self._raise_if_metric_conflicts,
     )
+    grad = jax.lax.pmean(grad, axis_name=self._PMAP_AXIS_NAME)
     grad_means = pytree_leaf_means(grad, "grad_mean")
     metrics.update(grad_means)
-    nets, opt_state = self._agent.optimize_from_grads(agent_state.nets, agent_state.opt, grad)
-    return dataclasses.replace(agent_state, nets=nets, opt=opt_state), metrics
+    nets, opt_state = self._agent.optimize_from_grads(nets, opt_state, grad)
+    return (nets, opt_state, experience_state), metrics
 
   def _learn(
-    self,
-    agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState],
-    metrics: ArrayMetrics,
-  ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
-    agent_state, off_policy_metrics = filter_scan(
+    self, nets: _Networks, opt_state: _OptState, experience_state: _ExperienceState
+  ) -> tuple[_Networks, _OptState, _ExperienceState, ArrayMetrics]:
+    (nets, opt_state, experience_state), off_policy_metrics = filter_scan(
       self._off_policy_optim,
-      init=agent_state,
+      init=(nets, opt_state, experience_state),
       xs=None,
       length=self._agent.num_off_policy_optims_per_cycle(),
     )
     # Take mean of each metric.
     # This is potentially misleading, but not sure what else to do.
-    metrics.update({k: jnp.mean(v) for k, v in off_policy_metrics.items()})
 
-    return agent_state, metrics
+    return (
+      nets,
+      opt_state,
+      experience_state,
+      {k: jnp.mean(v) for k, v in off_policy_metrics.items()},
+    )
 
   def _actor_cycle(
     self,
