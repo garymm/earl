@@ -1,5 +1,5 @@
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import equinox as eqx
 import jax
@@ -9,6 +9,7 @@ from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
 from earl.core import ActionAndState, Agent, EnvStep, Metrics
 from earl.core import AgentState as CoreAgentState
+from earl.utils.sharding import shard_along_axis_0
 
 
 class ActorState(eqx.Module):
@@ -98,7 +99,7 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceSt
       key=key,
       mask=actor_state.mask & ~env_step.new_episode,
       rewards=set_batch(actor_state.rewards, env_step.reward * actor_state.mask),
-      t=(actor_state.t + 1) % self.config.max_actor_state_history,
+      t=actor_state.t + 1,
     )
     return ActionAndState(actions, actor_state)
 
@@ -152,4 +153,17 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceSt
     return ExperienceState(
       rewards=actor_state_post.rewards,
       chosen_action_log_probs=actor_state_post.chosen_action_log_probs,
+    )
+
+  def shard_actor_state(
+    self, actor_state: ActorState, learner_devices: Sequence[jax.Device]
+  ) -> ActorState:
+    return ActorState(
+      chosen_action_log_probs=shard_along_axis_0(
+        actor_state.chosen_action_log_probs, learner_devices
+      ),
+      key=jax.device_put_replicated(actor_state.key, learner_devices),
+      mask=shard_along_axis_0(actor_state.mask, learner_devices),
+      rewards=shard_along_axis_0(actor_state.rewards, learner_devices),
+      t=jax.device_put_replicated(actor_state.t, learner_devices),
     )

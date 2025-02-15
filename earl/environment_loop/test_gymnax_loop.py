@@ -8,8 +8,7 @@ from jax_loop_utils.metric_writers import MemoryWriter
 from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 
 from earl.agents.random_agent.random_agent import RandomAgent
-from earl.core import ConflictingMetricError, Metrics, env_info_from_gymnax
-from earl.environment_loop import CycleResult
+from earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnax
 from earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
 from earl.utils.prng import keygen
 
@@ -149,10 +148,10 @@ def test_observe_cycle():
   steps_per_cycle = 3
   agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
 
-  def observe_cycle(cycle_result: CycleResult) -> Metrics:
-    assert cycle_result.trajectory.obs.shape[0] == num_envs
-    assert cycle_result.trajectory.obs.shape[1] == steps_per_cycle
-    assert "discount" in cycle_result.step_infos
+  def observe_cycle(trajectory: EnvStep, step_infos: dict) -> Metrics:
+    assert trajectory.obs.shape[0] == num_envs
+    assert trajectory.obs.shape[1] == steps_per_cycle
+    assert "discount" in step_infos
     return {"ran": True}
 
   metric_writer = MemoryWriter()

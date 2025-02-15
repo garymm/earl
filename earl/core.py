@@ -1,10 +1,8 @@
 """Core types."""
 
 import abc
-import typing
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 
 import equinox as eqx
@@ -16,8 +14,6 @@ from gymnasium.core import Env as GymnasiumEnv
 from gymnax.environments.environment import Environment as GymnaxEnv
 from gymnax.environments.spaces import Space
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
-
-from earl.utils.sharding import shard_along_axis_0
 
 
 class ConflictingMetricError(Exception):
@@ -105,8 +101,7 @@ class EnvStep(eqx.Module):
   reward: jax.Array
 
 
-@dataclass(frozen=True)
-class EnvInfo:
+class EnvInfo(NamedTuple):
   num_envs: int
   observation_space: Space
   action_space: Space
@@ -181,16 +176,6 @@ def _prepare_for_actor_cycle_jit(
   actor_state: _ActorState, prepare_for_actor_cycle: Callable[[_ActorState], _ActorState]
 ) -> _ActorState:
   return prepare_for_actor_cycle(actor_state)
-
-
-@eqx.filter_jit()
-@eqx.debug.assert_max_traces(max_traces=1)  # TODO remove once I test
-def _shard_actor_state_jit(
-  actor_state: _ActorState,
-  learner_devices: typing.Sequence[jax.Device],
-  shard_actor_state: Callable[[_ActorState, Sequence[jax.Device]], _ActorState],
-) -> _ActorState:
-  return shard_actor_state(actor_state, learner_devices)
 
 
 def _convert_gymnasium_space_to_gymnax_space(gym_space: gym_spaces.Space) -> gymnax_spaces.Space:
@@ -537,6 +522,7 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     - state = self.optimize_from_grads(state, grads)
     """
 
+  @abc.abstractmethod
   def shard_actor_state(
     self, actor_state: _ActorState, learner_devices: Sequence[jax.Device]
   ) -> _ActorState:
@@ -545,8 +531,9 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     The output should have a leading axis equal to the number of devices so that it cam
     be passed to jax.pmap().
 
-    Sub-classes should override _shard_actor_state. This method is a wrapper that adds
-    jit-compilation.
+    Typically any per-environment state should be sharded using
+    earl.utils.sharding.shard_along_axis_0() and other state should be replicated
+    using jax.device_put_replicated().
 
     Args:
         actor_state: The actor state to shard.
@@ -555,26 +542,3 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
     Returns:
         The sharded actor state.
     """
-    return _shard_actor_state_jit(actor_state, learner_devices, self._shard_actor_state)
-
-  def _shard_actor_state(
-    self, actor_state: _ActorState, learner_devices: Sequence[jax.Device]
-  ) -> _ActorState:
-    """Shards the actor state for distributed training.
-
-    Must be jit-compatible.
-
-    Default implementation shards all arrays that have a leading axis equal to the number of
-    environments, and replicates the rest.
-    """
-    return jax.tree.map(
-      partial(self._shard_actor_state_array, learner_devices=learner_devices), actor_state
-    )
-
-  def _shard_actor_state_array(
-    self, x: jax.Array, learner_devices: Sequence[jax.Device]
-  ) -> jax.Array:
-    if x.shape[0] == self.env_info.num_envs:
-      return shard_along_axis_0(x, learner_devices)
-    else:
-      return jax.device_put_replicated(x, learner_devices)
