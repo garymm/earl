@@ -8,6 +8,7 @@ pip_compile(
         "--emit-index-url",
         "--no-strip-extras",
         "--extra=test",
+        "--extra=agent-r2d2",
     ],
     python_platform = "x86_64-unknown-linux-gnu",
     requirements_in = "//:pyproject.toml",

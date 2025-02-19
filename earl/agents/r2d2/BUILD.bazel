@@ -1,0 +1,34 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("//tools/py_test:py_test.bzl", "py_test")
+
+py_library(
+    name = "r2d2",
+    srcs = ["r2d2.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//earl:core",
+        "@pypi//chex",
+        "@pypi//equinox",
+        "@pypi//jax",
+        "@pypi//jaxtyping",
+        "@pypi//optax",
+    ],
+)
+
+py_test(
+    name = "test_r2d2",
+    timeout = "short",
+    srcs = ["test_r2d2.py"],
+    deps = [
+        ":r2d2",
+        "//earl:core",
+        "//earl/environment_loop:gymnax_loop",
+        "@pypi//equinox",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jax_loop_utils",
+        "@pypi//numpy",
+        "@pypi//optax",
+        "@pypi//pytest",
+    ],
+)

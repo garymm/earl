@@ -14,6 +14,7 @@ chex==0.1.88 \
     --hash=sha256:234b61a5baa8132802e4b9c5657167d6c8a911d90a59a0bec47d537567e41b75 \
     --hash=sha256:565de897b1373232cdfca5e699f50fa49403d2c7d23f6c5a75a97ef713d2fe36
     # via
+    #   earl (pyproject.toml)
     #   gymnax
     #   optax
 cloudpickle==3.1.1 \

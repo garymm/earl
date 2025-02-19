@@ -729,7 +729,7 @@
         "bzlTransitiveDigest": "h3l5yNW8eXVHIXFfZ1vECDJPLlSAOWTlWDCGnLT9mRw=",
         "usagesDigest": "T0fL24tE1b+5kwPNF/9I8bAf12j/qnhoQArq5gR2sIA=",
         "recordedFileInputs": {
-          "@@//requirements_linux_x86_64.txt": "861139a90b89881fdf5b9c63594779663b16bcc7f6d8b6bf99abb5d679a171d7",
+          "@@//requirements_linux_x86_64.txt": "1e5d8b341d2f1057189e6d16f6ca6411dfb1a4d2cd76894ce14d33e2741621e4",
           "@@//tools/requirements_basedpyright.txt": "c4bc0a17780fc1e7a7b3ffa4549677e37af6334f890a97eb7931249cf438a286",
           "@@protobuf+//python/requirements.txt": "983be60d3cec4b319dcab6d48aeb3f5b2f7c3350f26b3a9e97486c37967c73c5",
           "@@rules_fuzzing+//fuzzing/requirements.txt": "ab04664be026b632a0d2a2446c4f65982b7654f5b6851d2f9d399a19b7242a5b",
