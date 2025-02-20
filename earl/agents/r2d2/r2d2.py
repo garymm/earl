@@ -1,5 +1,5 @@
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Sequence
 from typing import Any
 
 import equinox as eqx
@@ -9,10 +9,11 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.agents.r2d2.networks import OAREmbedding, R2D2Networks
+from earl.agents.r2d2.networks import R2D2Networks
 from earl.agents.r2d2.utils import double_q_learning, filter_incremental_update
 from earl.core import ActionAndState, Agent, AgentState, EnvStep, Metrics
 from earl.utils.eqx_filter import filter_cond
+from earl.utils.sharding import shard_along_axis_0
 
 
 class R2D2OptState(eqx.Module):
@@ -48,17 +49,24 @@ class R2D2Config:
   priority_exponent: float = 0.9  # Section 2.3: priority exponent.
   target_update_period: int = 2500  # Section 2.3: period to update target network.
   buffer_size: int = 10000  # Total number of time steps in replay.
-  seq_length: int = 80  # Fixed sequence length (m).
+  update_experience_trajectory_length: int = 80  # trajectory length for each update.
+  seq_length: int = 80  # sequence length (m).
   store_hidden_states: bool = False  # If true, store hidden state for first time step per sequence.
   # Gradient clipping suggested by https://www.nature.com/articles/nature14236
   optimizer: optax.GradientTransformation = optax.chain(optax.clip(1.0), optax.adam(1e-4))
   td_lambda: float = 1.0  # Hyperparameter for lambda returns.
   num_optims_per_target_update: int = 1  # how frequently to update the target network.
   target_update_step_size: float = 0.01  # how much to update the target network.
+  num_envs_per_learner: int = 0
+  """Number of environments per learner. 0 means use env_info.num_envs."""
 
   def __post_init__(self):
     if self.buffer_size % self.seq_length:
       raise ValueError("buffer_size must be divisible by seq_length.")
+    if self.update_experience_trajectory_length % self.seq_length:
+      raise ValueError("update_experience_trajectory_length must be divisible by seq_length.")
+    if self.buffer_size % self.update_experience_trajectory_length:
+      raise ValueError("buffer_size must be divisible by update_experience_trajectory_length.")
 
 
 # Update the AgentState alias to use bundled networks.
@@ -86,23 +94,27 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
 
   def _new_experience_state(self, nets: R2D2Networks, key: PRNGKeyArray) -> R2D2ExperienceState:
     total_steps = self.config.buffer_size
-    seq_length = self.config.seq_length
-    num_sequences = total_steps // seq_length
+    num_sequences = total_steps // self.config.seq_length
+    num_envs = self.config.num_envs_per_learner or self.env_info.num_envs
     env_info = self.env_info
     assert isinstance(env_info.observation_space, gymnax_spaces.Box)
     obs_shape = env_info.observation_space.shape
-    observations = jnp.zeros((num_sequences, seq_length) + obs_shape)
-    actions = jnp.zeros((num_sequences, seq_length), dtype=jnp.int32)
-    rewards = jnp.zeros((num_sequences, seq_length))
-    dones = jnp.zeros((num_sequences, seq_length), dtype=jnp.bool)
-    pointer = jnp.array(0, dtype=jnp.uint32)
-    size = jnp.array(0, dtype=jnp.uint32)
+    observations = jnp.zeros(
+      (num_envs, total_steps) + obs_shape, dtype=env_info.observation_space.dtype
+    )
+    action_space = env_info.action_space
+    assert isinstance(action_space, gymnax_spaces.Discrete)
+    actions = jnp.zeros((num_envs, total_steps), dtype=action_space.dtype)
+    rewards = jnp.zeros((num_envs, total_steps))
+    dones = jnp.zeros((num_envs, total_steps), dtype=jnp.bool)
+    pointer = jnp.zeros((num_envs,), dtype=jnp.uint32)
+    size = jnp.zeros((num_envs,), dtype=jnp.uint32)
     if self.config.store_hidden_states:
-      hidden_states_h = jnp.zeros((num_sequences, nets.online.lstm_cell.hidden_size))
-      hidden_states_c = jnp.zeros((num_sequences, nets.online.lstm_cell.hidden_size))
+      hidden_states_h = jnp.zeros((num_envs, num_sequences, nets.online.lstm_cell.hidden_size))
+      hidden_states_c = jnp.zeros((num_envs, num_sequences, nets.online.lstm_cell.hidden_size))
     else:
-      hidden_states_h = jnp.zeros((num_sequences, 0))
-      hidden_states_c = jnp.zeros((num_sequences, 0))
+      hidden_states_h = jnp.zeros(())
+      hidden_states_c = jnp.zeros(())
     return R2D2ExperienceState(
       observations=observations,
       actions=actions,
@@ -123,7 +135,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
   def _act(
     self, actor_state: R2D2ActorState, nets: R2D2Networks, env_step: EnvStep
   ) -> ActionAndState[R2D2ActorState]:
-    q_values, new_h_c = nets.online(
+    q_values, new_h_c = eqx.filter_vmap(nets.online)(
       env_step.obs, env_step.prev_action, env_step.reward, actor_state.lstm_h_c
     )
     action = jnp.argmax(q_values, axis=-1)
@@ -208,28 +220,79 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     actor_state_post: R2D2ActorState,
     trajectory: EnvStep,
   ) -> R2D2ExperienceState:
+    if trajectory.reward.shape[1] != self.config.update_experience_trajectory_length:
+      raise ValueError(
+        "trajectory.reward.shape[1] must be equal to update_experience_trajectory_length."
+      )
     total_steps = self.config.buffer_size
-    seq_length = self.config.seq_length
-    num_sequences = total_steps // seq_length
-    idx = experience_state.pointer
-    new_obs = experience_state.observations.at[idx].set(trajectory.obs)
-    new_actions = experience_state.actions.at[idx].set(trajectory.prev_action)
-    new_rewards = experience_state.rewards.at[idx].set(trajectory.reward)
-    new_dones = experience_state.dones.at[idx].set(trajectory.new_episode)
+    traj_len = self.config.update_experience_trajectory_length
+
+    def update_buffer(buffer, pointer, size, data):
+      """Updates buffer with fixed trajectory_length blocks."""
+
+      assert data.shape[0] == traj_len
+      assert buffer.shape[0] - pointer >= traj_len
+      start_indices = (pointer,) + (jnp.array(0, dtype=jnp.uint32),) * (len(buffer.shape) - 1)
+      new_buffer = jax.lax.dynamic_update_slice(buffer, data, start_indices)
+
+      return new_buffer
+
+    new_obs = jax.vmap(update_buffer)(
+      experience_state.observations,
+      experience_state.pointer,
+      experience_state.size,
+      trajectory.obs,
+    )
+
+    new_actions = jax.vmap(update_buffer)(
+      experience_state.actions,
+      experience_state.pointer,
+      experience_state.size,
+      trajectory.prev_action,
+    )
+
+    new_rewards = jax.vmap(update_buffer)(
+      experience_state.rewards,
+      experience_state.pointer,
+      experience_state.size,
+      trajectory.reward,
+    )
+
+    new_dones = jax.vmap(update_buffer)(
+      experience_state.dones,
+      experience_state.pointer,
+      experience_state.size,
+      trajectory.new_episode,
+    )
+
     if self.config.store_hidden_states:
-      new_hidden_h = experience_state.hidden_states_h.at[idx].set(actor_state_pre.lstm_h_c[0])
-      new_hidden_c = experience_state.hidden_states_c.at[idx].set(actor_state_pre.lstm_h_c[1])
+
+      def update_hidden(hidden_buffer, pointer, init_hidden):
+        """Updates hidden state at sequence boundary."""
+        seq_index = pointer // traj_len
+        return hidden_buffer.at[seq_index].set(init_hidden)
+
+      new_hidden_h = jax.vmap(update_hidden)(
+        experience_state.hidden_states_h,
+        experience_state.pointer,
+        actor_state_pre.lstm_h_c[0],
+      )
+      new_hidden_c = jax.vmap(update_hidden)(
+        experience_state.hidden_states_c,
+        experience_state.pointer,
+        actor_state_pre.lstm_h_c[1],
+      )
     else:
       new_hidden_h = experience_state.hidden_states_h
       new_hidden_c = experience_state.hidden_states_c
-    new_pointer = (idx + 1) % num_sequences
-    new_size = jnp.minimum(experience_state.size + 1, num_sequences)
+    new_ptr = (experience_state.pointer + traj_len) % total_steps
+    new_size = jnp.minimum(experience_state.size + traj_len, total_steps)
     return R2D2ExperienceState(
       observations=new_obs,
       actions=new_actions,
       rewards=new_rewards,
       dones=new_dones,
-      pointer=new_pointer,
+      pointer=new_ptr,
       size=new_size,
       hidden_states_h=new_hidden_h,
       hidden_states_c=new_hidden_c,
@@ -273,3 +336,15 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       target_update_count=opt_state.target_update_count + 1,
     )
     return nets, opt_state
+
+  def shard_actor_state(
+    self, actor_state: R2D2ActorState, learner_devices: Sequence[jax.Device]
+  ) -> R2D2ActorState:
+    """Shards the LSTM hidden states and replicates the PRNG key across devices."""
+    return R2D2ActorState(
+      lstm_h_c=(
+        shard_along_axis_0(actor_state.lstm_h_c[0], learner_devices),
+        shard_along_axis_0(actor_state.lstm_h_c[1], learner_devices),
+      ),
+      key=jax.device_put_replicated(actor_state.key, learner_devices),
+    )
