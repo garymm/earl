@@ -20,7 +20,7 @@ class R2D2OptState(eqx.Module):
   target_update_count: jax.Array  # scalar; counts steps since last target network update
 
 
-# R2D2 Actor state holds the LSTMCell’s recurrent state and a PRNG key.
+# R2D2 Actor state holds the LSTMCell's recurrent state and a PRNG key.
 class R2D2ActorState(eqx.Module):
   lstm_h_c: Any  # Tuple of (h, c); see Section 2.3.
   key: PRNGKeyArray
@@ -90,11 +90,10 @@ class R2D2Network(eqx.Module):
     reward: jax.Array,
     hidden: tuple[jax.Array, jax.Array],
   ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
-    features = self.embed(observation, action, reward)  # Section 2.3.
-    features = features.reshape((features.shape[0], -1))
-    h, c = self.lstm_cell(features, hidden)  # Section 3.
-    value = self.dueling_value(h)  # Section 2.3.
-    advantage = self.dueling_advantage(h)  # Section 2.3.
+    features = self.embed(observation, action, reward)
+    h, c = self.lstm_cell(features, hidden)
+    value = self.dueling_value(h)
+    advantage = self.dueling_advantage(h)
     q_values = value + (advantage - jnp.mean(advantage, axis=-1, keepdims=True))
     return q_values, (h, c)
 

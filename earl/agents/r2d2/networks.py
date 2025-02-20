@@ -32,9 +32,9 @@ class ResidualBlock(eqx.Module):
     self.use_layer_norm = use_layer_norm
 
     if use_layer_norm:
-      # Shape is (channels, height, width) for the normalization
-      self.layernorm1 = eqx.nn.LayerNorm((num_channels, 1, 1), eps=1e-6)
-      self.layernorm2 = eqx.nn.LayerNorm((num_channels, 1, 1), eps=1e-6)
+      # Shape is (channels) for the normalization, we'll vmap over H,W
+      self.layernorm1 = eqx.nn.LayerNorm(num_channels, eps=1e-6)
+      self.layernorm2 = eqx.nn.LayerNorm(num_channels, eps=1e-6)
     else:
       self.layernorm1 = None
       self.layernorm2 = None
@@ -44,25 +44,35 @@ class ResidualBlock(eqx.Module):
 
     # First layer in residual block
     if self.layernorm1 is not None:
-      output = self.layernorm1(output)
+      # Transpose to (H, W, C) for LayerNorm
+      output = jnp.transpose(output, (1, 2, 0))
+      # Apply LayerNorm to channel dimension at each spatial location
+      output = jax.vmap(jax.vmap(self.layernorm1))(output)
+      # Transpose back to (C, H, W)
+      output = jnp.transpose(output, (2, 0, 1))
+
     output = jax.nn.relu(output)
     output = self.inner_op1(output)
 
     # Second layer in residual block
     if self.layernorm2 is not None:
-      output = self.layernorm2(output)
+      # Same normalization pattern as above
+      output = jnp.transpose(output, (1, 2, 0))
+      output = jax.vmap(jax.vmap(self.layernorm2))(output)
+      output = jnp.transpose(output, (2, 0, 1))
+
     output = jax.nn.relu(output)
     output = self.inner_op2(output)
     return x + output
 
 
 def make_downsampling_layer(
-  output_channels: int, *, key: jaxtyping.PRNGKeyArray
+  in_channels: int, out_channels: int, *, key: jaxtyping.PRNGKeyArray
 ) -> tuple[eqx.nn.Conv2d, eqx.nn.MaxPool2d]:
   """Returns conv + maxpool layers for downsampling."""
   conv = eqx.nn.Conv2d(
-    in_channels=output_channels,
-    out_channels=output_channels,
+    in_channels=in_channels,
+    out_channels=out_channels,
     kernel_size=3,
     stride=1,
     padding=1,
@@ -75,6 +85,7 @@ def make_downsampling_layer(
 class ResNetTorso(eqx.Module):
   """ResNetTorso for visual inputs, inspired by the IMPALA paper."""
 
+  in_channels: int
   channels_per_group: Sequence[int]
   blocks_per_group: Sequence[int]
   use_layer_norm: bool
@@ -83,12 +94,14 @@ class ResNetTorso(eqx.Module):
 
   def __init__(
     self,
+    in_channels: int = 4,  # 4 stacked frames
     channels_per_group: Sequence[int] = (16, 32, 32),
     blocks_per_group: Sequence[int] = (2, 2, 2),
     use_layer_norm: bool = False,
     *,
     key: jaxtyping.PRNGKeyArray,
   ):
+    self.in_channels = in_channels
     self.channels_per_group = channels_per_group
     self.blocks_per_group = blocks_per_group
     self.use_layer_norm = use_layer_norm
@@ -107,10 +120,12 @@ class ResNetTorso(eqx.Module):
 
     # Create downsampling layers
     downsample_keys = keys[:num_groups]
-    self.downsampling_layers = [
-      make_downsampling_layer(channels, key=k)
-      for channels, k in zip(channels_per_group, downsample_keys, strict=False)
-    ]
+    prev_channels = in_channels
+    self.downsampling_layers = []
+    for channels, k in zip(channels_per_group, downsample_keys, strict=False):
+      layer = make_downsampling_layer(in_channels=prev_channels, out_channels=channels, key=k)
+      self.downsampling_layers.append(layer)
+      prev_channels = channels
 
     # Create residual blocks
     block_keys = keys[num_groups:]
@@ -160,6 +175,8 @@ class DeepAtariTorso(eqx.Module):
     blocks_per_group: Sequence[int] = (2, 2, 2),
     hidden_sizes: Sequence[int] = (512,),
     use_layer_norm: bool = True,
+    in_channels: int = 4,
+    input_size: int = 84,
     *,
     key: jaxtyping.PRNGKeyArray,
   ):
@@ -169,14 +186,22 @@ class DeepAtariTorso(eqx.Module):
       channels_per_group=channels_per_group,
       blocks_per_group=blocks_per_group,
       use_layer_norm=use_layer_norm,
+      in_channels=in_channels,
       key=keys[0],
     )
 
-    # MLP head with activation on final layer
+    # Calculate spatial size through actual pooling steps
+    spatial_size = input_size
+    for _ in range(len(channels_per_group)):
+      spatial_size = (spatial_size + 2 * 1 - 3) // 2 + 1  # MaxPool formula
+
+    spatial_dim = spatial_size * spatial_size
+    in_size = channels_per_group[-1] * spatial_dim
+
     self.mlp_head = eqx.nn.MLP(
-      in_size=channels_per_group[-1],  # Last channel count
+      in_size=in_size,
       out_size=hidden_sizes[-1],
-      width_size=hidden_sizes[0] if len(hidden_sizes) > 1 else hidden_sizes[0],
+      width_size=hidden_sizes[0],
       depth=len(hidden_sizes),
       activation=jax.nn.relu,
       final_activation=jax.nn.relu,
@@ -184,10 +209,13 @@ class DeepAtariTorso(eqx.Module):
     )
 
   def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+    if x.dtype == jnp.uint8:
+      x = x.astype(jnp.float32) / 255.0
     output = self.resnet(x)
     output = jax.nn.relu(output)
-    # Flatten all dimensions except batch and channel
-    output = output.reshape(output.shape[0], -1)
+    # Flatten all dimensions into a single vector
+    output = output.reshape(-1)
+    print(f"resnetoutput shape: {output.shape}")
     output = self.mlp_head(output)
     return output
 
@@ -205,12 +233,14 @@ class OAREmbedding(eqx.Module):
   def __call__(self, observation: jax.Array, action: jax.Array, reward: jax.Array) -> jnp.ndarray:
     """Embed each of the (observation, action, reward) inputs & concatenate."""
     features = self.torso(observation)  # [D]
-    action = jax.nn.one_hot(action, num_classes=self.num_actions)  # [A]
+
+    action = jnp.squeeze(jax.nn.one_hot(action, num_classes=self.num_actions))  # [A]
     # Map rewards -> [-1, 1].
     reward = jnp.tanh(reward)
     # Add dummy trailing dimensions to rewards if necessary.
     while reward.ndim < action.ndim:
       reward = jnp.expand_dims(reward, axis=-1)
+
     # Concatenate on final dimension.
     embedding = jnp.concatenate([features, action, reward], axis=-1)  # [D+A+1]
     return embedding
