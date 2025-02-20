@@ -1,11 +1,12 @@
 import ale_py
+import chex
 import gymnasium
 import jax
 import jax.numpy as jnp
 from jax_loop_utils.metric_writers import MemoryWriter
 
 import earl.agents.r2d2.networks as r2d2_networks
-from earl.agents.r2d2.r2d2 import R2D2, R2D2Config
+from earl.agents.r2d2.r2d2 import R2D2, R2D2Config, _inverse_value_rescale, _value_rescale
 from earl.core import env_info_from_gymnasium
 from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 
@@ -72,3 +73,11 @@ def test_r2d2_atari_training():
   del agent_state
   metrics = metric_writer.scalars
   print(metrics)
+
+
+def test_value_rescaling():
+  eps = 0.0001
+  x = jnp.array([-1, 0, 1])
+  y = _value_rescale(x, eps)
+  chex.assert_trees_all_close(y, jnp.array([-(jnp.sqrt(2) - 1) - eps, 0.0, jnp.sqrt(2) - 1 + eps]))
+  chex.assert_trees_all_close(_inverse_value_rescale(y, eps), x, rtol=2e-3, atol=2e-3)

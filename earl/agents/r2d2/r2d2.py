@@ -11,12 +11,24 @@ import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
 from earl.agents.r2d2.networks import R2D2Networks
-from earl.agents.r2d2.utils import double_q_learning, filter_incremental_update
 from earl.core import ActionAndState, Agent, AgentState, EnvStep, Metrics
-from earl.utils.eqx_filter import filter_cond
 from earl.utils.sharding import shard_along_axis_0
 
 
+def _value_rescale(x: jnp.ndarray, eps: float) -> jnp.ndarray:
+  """Value rescaling function.
+
+  From section 2.3:  h(x) = sign(x) * (√(|x|+1) - 1) + ε*x
+  """
+  return jnp.sign(x) * (jnp.sqrt(jnp.abs(x) + 1) - 1) + eps * x
+
+
+def _inverse_value_rescale(y: jnp.ndarray, eps: float) -> jnp.ndarray:
+  """Inverse of _value_rescale."""
+  return jnp.sign(y) * (((jnp.sqrt(4 * eps * (jnp.abs(y) + 1 + eps) + 1) - 1) / (2 * eps)) ** 2 - 1)
+
+
+# ------------------------------------------------------------------
 class R2D2OptState(eqx.Module):
   optax_state: optax.OptState
   target_update_count: jax.Array  # scalar; counts steps since last target network update
@@ -60,6 +72,7 @@ class R2D2Config:
   target_update_step_size: float = 0.01  # how much to update the target network.
   num_envs_per_learner: int = 0
   """Number of environments per learner. 0 means use env_info.num_envs."""
+  value_rescaling_epsilon: float = 1e-3  # Epsilon parameter for h and h⁻¹.
 
   def __post_init__(self):
     if self.buffer_capacity % self.replay_seq_length:
@@ -152,11 +165,11 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     burn_in = self.config.burn_in
     n_step = self.config.n_step
     discount = self.config.discount
+    eps = self.config.value_rescaling_epsilon
 
     # Number of sequences (batch size).
     B = experience_state.observations.shape[0]
 
-    # Use stored hidden state if available; otherwise, initialize using online network.
     if self.config.store_hidden_states:
       init_hidden = (experience_state.hidden_states_h, experience_state.hidden_states_c)
     else:
@@ -185,32 +198,58 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     valid_ts = jnp.arange(burn_in, seq_length - n_step + 1)
 
     def td_error_for_t(t):
-      # Compute n-step cumulative reward.
       discounts = discount ** jnp.arange(n_step)
-      r_slice = rewards[:, t : t + n_step]
+      r_slice = jax.lax.dynamic_slice(
+        rewards, (0, t), (rewards.shape[0], n_step)
+      )  # shape: (B, n_step)
       r_cum = jnp.sum(r_slice * discounts, axis=-1)  # shape: (B,)
-      # Compute mask to zero out bootstrapped value if any done.
-      mask = jnp.prod(1 - dones[:, t : t + n_step].astype(jnp.float32), axis=-1)  # shape: (B,)
-      # Online network's Q-values at time t+n_step.
-      q_online_tn = q_seq[:, t + n_step, :]  # shape: (B, num_actions)
-      # Use target network to evaluate Q-values at time t+n_step.
-      obs_tn = experience_state.observations[:, t + n_step]
-      action_tn = experience_state.actions[:, t + n_step]
-      reward_tn = experience_state.rewards[:, t + n_step]
-      hidden_tn = (h_seq[:, t + n_step, :], c_seq[:, t + n_step, :])
-      q_target, _ = nets.target(obs_tn, action_tn, reward_tn, hidden_tn)  # shape: (B, num_actions)
-      # Q-value at time t for taken action.
-      q_taken = jnp.take_along_axis(q_seq[:, t, :], actions[:, t : t + 1], axis=-1).squeeze(axis=1)
-      error = double_q_learning(
-        q_tm1=q_taken,
-        a_tm1=actions[:, t],
-        r_t=r_cum,
-        discount_t=(discount**n_step) * mask,
-        q_t_value=q_target,
-        q_t_selector=q_online_tn,
-        stop_target_gradients=True,
+
+      dones_slice = jax.lax.dynamic_slice(
+        dones, (0, t), (dones.shape[0], n_step)
+      )  # shape: (B, n_step)
+      mask = jnp.cumprod(1 - dones_slice.astype(jnp.float32), axis=-1)  # shape: (B,)
+
+      q_online_tn = jax.lax.dynamic_slice(
+        q_seq, (0, t + n_step, 0), (q_seq.shape[0], 1, q_seq.shape[2])
       )
-      return error
+      q_online_tn = q_online_tn.squeeze(1)  # shape: (B, num_actions)
+      a_max = jnp.argmax(q_online_tn, axis=-1)  # shape: (B,)
+
+      # Dynamically construct start indices and slice sizes for observations
+      obs_start_indices = (0, t + n_step) + (0,) * (len(experience_state.observations.shape) - 2)
+      obs_slice_sizes = (
+        experience_state.observations.shape[0],
+        1,
+      ) + experience_state.observations.shape[2:]
+      obs_tn = jax.lax.dynamic_slice(
+        experience_state.observations,
+        obs_start_indices,
+        obs_slice_sizes,
+      )
+      obs_tn = obs_tn.squeeze(1)  # Remove the singleton time dimension
+      h_tn = jax.lax.dynamic_slice(
+        h_seq, (0, t + n_step, 0), (h_seq.shape[0], 1, h_seq.shape[2])
+      ).squeeze(1)
+      c_tn = jax.lax.dynamic_slice(
+        c_seq, (0, t + n_step, 0), (c_seq.shape[0], 1, c_seq.shape[2])
+      ).squeeze(1)
+      hidden_tn = (h_tn, c_tn)
+      a_tn = jax.lax.dynamic_slice(actions, (0, t + n_step), (actions.shape[0], 1)).squeeze(1)
+      r_tn = jax.lax.dynamic_slice(rewards, (0, t + n_step), (rewards.shape[0], 1)).squeeze(1)
+      q_target, _ = jax.vmap(nets.target)(obs_tn, a_tn, r_tn, hidden_tn)  # shape: (B, num_actions)
+      q_target_val = jnp.take_along_axis(q_target, a_max[:, None], axis=-1).squeeze(
+        -1
+      )  # shape: (B,)
+
+      unscaled_q_target = _inverse_value_rescale(q_target_val, eps)
+      unscaled_target = r_cum + (discount**n_step) * mask * unscaled_q_target
+      target = _value_rescale(unscaled_target, eps)
+
+      q_t = jax.lax.dynamic_slice(q_seq, (0, t, 0), (q_seq.shape[0], 1, q_seq.shape[2]))
+      q_t = q_t.squeeze(1)  # shape: (B, num_actions)
+      actions_t = jax.lax.dynamic_slice(actions, (0, t), (actions.shape[0], 1))
+      q_taken = jnp.take_along_axis(q_t, actions_t, axis=-1).squeeze(axis=1)
+      return q_taken - target
 
     td_errors = jax.vmap(td_error_for_t)(valid_ts)  # shape: (T, B)
     loss = jnp.mean(jnp.square(td_errors))
@@ -234,8 +273,6 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     traj_len = self.config.update_experience_trajectory_length
 
     def update_buffer(buffer, pointer, data):
-      """Updates buffer with fixed traj_len blocks."""
-
       chex.assert_shape(data, (traj_len, ...))
       chex.assert_shape(buffer, (buffer_capacity, ...))
       start_indices = (pointer,) + (jnp.array(0, dtype=jnp.uint32),) * (len(buffer.shape) - 1)
@@ -266,7 +303,6 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     )
 
     def update_hidden(hidden_buffer, pointer, init_hidden):
-      """Updates hidden state at sequence boundary."""
       seq_index = pointer // traj_len
       return hidden_buffer.at[seq_index].set(init_hidden)
 
@@ -315,31 +351,25 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     self, nets: R2D2Networks, opt_state: R2D2OptState, nets_grads: PyTree
   ) -> tuple[R2D2Networks, R2D2OptState]:
     updates, optax_state = self.config.optimizer.update(nets_grads.online, opt_state.optax_state)
-    online = eqx.apply_updates(nets.online, updates)
+    new_online = eqx.apply_updates(nets.online, updates)
+    new_target_update_count = opt_state.target_update_count + 1
 
-    do_target_update = opt_state.target_update_count % self.config.num_optims_per_target_update == 0
-    target = filter_cond(
-      do_target_update,
-      lambda nets: filter_incremental_update(
-        new_tensors=nets.online,
-        old_tensors=nets.target,
-        step_size=self.config.target_update_step_size,
-      ),
-      lambda nets: nets.target,
-      nets,
-    )
+    def update_target():
+      return new_online, jnp.array(0, dtype=jnp.uint32)
 
-    nets = R2D2Networks(online=online, target=target)
-    opt_state = R2D2OptState(
-      optax_state=optax_state,
-      target_update_count=opt_state.target_update_count + 1,
+    def keep_target():
+      return nets.target, new_target_update_count
+
+    new_target, final_count = jax.lax.cond(
+      new_target_update_count >= self.config.target_update_period, update_target, keep_target
     )
-    return nets, opt_state
+    new_nets = R2D2Networks(online=new_online, target=new_target)
+    new_opt_state = R2D2OptState(optax_state=optax_state, target_update_count=final_count)
+    return new_nets, new_opt_state
 
   def shard_actor_state(
     self, actor_state: R2D2ActorState, learner_devices: Sequence[jax.Device]
   ) -> R2D2ActorState:
-    """Shards the LSTM hidden states and replicates the PRNG key across devices."""
     return R2D2ActorState(
       lstm_h_c=(
         shard_along_axis_0(actor_state.lstm_h_c[0], learner_devices),
