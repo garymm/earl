@@ -10,6 +10,28 @@ absl-py==2.1.0 \
     #   jax-loop-utils
     #   optax
     #   orbax-checkpoint
+ale-py==0.10.2 \
+    --hash=sha256:13764f641117c5c4d629272aa303ef5ad21a75870318245d2e39d5fb5afac73b \
+    --hash=sha256:389440a842678041e4fccca9be3f4da3426e2eac64c7c53c2e7a7de9e73cbdc9 \
+    --hash=sha256:3b4f7f03e9ff18cc545f691105fb32a3ac5381543a97237ef8d2bdb6a38b7b4a \
+    --hash=sha256:4cbd01bce19c8fcfa109537ee461932e5b3bc3bf2d832072e2670ca6cb5912a1 \
+    --hash=sha256:4f1af4da243bd369cd74296b32fd952b27f72e5f55fcd090caf06b93e15608e3 \
+    --hash=sha256:62029caaed2cb09381b3d8ca488ad7ac8a0d8e1193bb5f6e1ff75a8cd4d14634 \
+    --hash=sha256:6e057557bbc13bf6eff2797a09070755d69d6fb9e54733e11a5e612fdf60117f \
+    --hash=sha256:744f623829d5bd8b105aac428249c27472fdf53f3822a3ceadea3c8cab27b161 \
+    --hash=sha256:7649911c311649b2dcfa4046d549b3f5cb5d8fc354fee01a73bd7762d97572a0 \
+    --hash=sha256:791f68cb665d8ddd1c3afa2eb0ce47a9441c8af2fad03abfd8f9bc0d7772650d \
+    --hash=sha256:813c38da130dd6d4c91980f2fd8060d10ca8b52054677af1a41f8bcc97c22072 \
+    --hash=sha256:88248f41463f0f05095aa58d45212e6948151fd86d885e3d655aaeb69e95e9b3 \
+    --hash=sha256:9659a0926f2e25a776fc9daab79e5f398096466f5a079caef370369d38309429 \
+    --hash=sha256:b1fab6fdf3b8f2e958427f1aecfce6aa29b9acb634882c365dbb953f1f93e4d3 \
+    --hash=sha256:be9c877ae53ab455c3d3639481e439df5c4b1e3312482f1efcd64e40d5d924ee \
+    --hash=sha256:cba2a904ab80670b9db8965d95dad3d978b4a133595c04b1be42f86c0371fdde \
+    --hash=sha256:d5312b5a2be4867ea25152b68896651a8ed514ffbf221b1c7d3f6141d9009087 \
+    --hash=sha256:e68297eda2681f8b5591c251a617c19c20a1e1af6a7d06ca1e32e6cca7fcede5 \
+    --hash=sha256:ef90b4416807b35a3a701548a8e5c1ef54bb4728665c4a74275de64ef41ff11f \
+    --hash=sha256:fe65028081b233572c143b58d5e3427c9a0f58dbee8367b2c9c658a1b9dae5e0
+    # via gymnasium
 chex==0.1.88 \
     --hash=sha256:234b61a5baa8132802e4b9c5657167d6c8a911d90a59a0bec47d537567e41b75 \
     --hash=sha256:565de897b1373232cdfca5e699f50fa49403d2c7d23f6c5a75a97ef713d2fe36
@@ -231,7 +253,7 @@ gym-notices==0.0.8 \
     --hash=sha256:ad25e200487cafa369728625fe064e88ada1346618526102659b4640f2b4b911 \
     --hash=sha256:e5f82e00823a166747b4c2a07de63b6560b1acb880638547e0cabf825a01e463
     # via gym
-gymnasium==1.0.0 \
+gymnasium[atari]==1.0.0 \
     --hash=sha256:9d2b66f30c1b34fe3c2ce7fae65ecf365d0e9982d2b3d860235e773328a3b403 \
     --hash=sha256:b6f40e1e24c5bd419361e1a5b86a9117d2499baecc3a660d44dfff4c465393ad
     # via
@@ -587,6 +609,7 @@ numpy==2.2.2 \
     --hash=sha256:e9e82dcb3f2ebbc8cb5ce1102d5f1c5ed236bf8a11730fb45ba82e2841ec21df \
     --hash=sha256:ed6906f61834d687738d25988ae117683705636936cc605be0bb208b23df4d8f
     # via
+    #   ale-py
     #   chex
     #   contourpy
     #   flax
@@ -610,7 +633,9 @@ opt-einsum==3.4.0 \
 optax==0.2.4 \
     --hash=sha256:4e05d3d5307e6dde4c319187ae36e6cd3a0c035d4ed25e9e992449a304f47336 \
     --hash=sha256:db35c04e50b52596662efb002334de08c2a0a74971e4da33f467e84fac08886a
-    # via flax
+    # via
+    #   earl (pyproject.toml)
+    #   flax
 orbax-checkpoint==0.11.1 \
     --hash=sha256:9cfbe49331ffdef4aedfec337da683eb8fc65221dc43924cf6daea6c27d6dc06 \
     --hash=sha256:e303f4f4441ba0367a14c692d6c73070bba954205de89df608f21823dd86eaee
