@@ -1,3 +1,4 @@
+import copy
 from collections.abc import Callable, Sequence
 
 import equinox as eqx
@@ -19,22 +20,23 @@ class ResidualBlock(eqx.Module):
     self,
     num_channels: int,
     use_layer_norm: bool = False,
+    dtype: jnp.dtype = jnp.float32,
     *,
     key: jaxtyping.PRNGKeyArray,
   ):
     keys = jax.random.split(key, 2)
     self.inner_op1 = eqx.nn.Conv2d(
-      num_channels, num_channels, kernel_size=3, padding=1, key=keys[0]
+      num_channels, num_channels, kernel_size=3, padding=1, key=keys[0], dtype=dtype
     )
     self.inner_op2 = eqx.nn.Conv2d(
-      num_channels, num_channels, kernel_size=3, padding=1, key=keys[1]
+      num_channels, num_channels, kernel_size=3, padding=1, key=keys[1], dtype=dtype
     )
     self.use_layer_norm = use_layer_norm
 
     if use_layer_norm:
       # Shape is (channels) for the normalization, we'll vmap over H,W
-      self.layernorm1 = eqx.nn.LayerNorm(num_channels, eps=1e-6)
-      self.layernorm2 = eqx.nn.LayerNorm(num_channels, eps=1e-6)
+      self.layernorm1 = eqx.nn.LayerNorm(num_channels, eps=1e-6, dtype=dtype)
+      self.layernorm2 = eqx.nn.LayerNorm(num_channels, eps=1e-6, dtype=dtype)
     else:
       self.layernorm1 = None
       self.layernorm2 = None
@@ -67,7 +69,7 @@ class ResidualBlock(eqx.Module):
 
 
 def make_downsampling_layer(
-  in_channels: int, out_channels: int, *, key: jaxtyping.PRNGKeyArray
+  in_channels: int, out_channels: int, *, key: jaxtyping.PRNGKeyArray, dtype: jnp.dtype
 ) -> tuple[eqx.nn.Conv2d, eqx.nn.MaxPool2d]:
   """Returns conv + maxpool layers for downsampling."""
   conv = eqx.nn.Conv2d(
@@ -77,6 +79,7 @@ def make_downsampling_layer(
     stride=1,
     padding=1,
     key=key,
+    dtype=dtype,
   )
   maxpool = eqx.nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
   return conv, maxpool
@@ -98,6 +101,7 @@ class ResNetTorso(eqx.Module):
     channels_per_group: Sequence[int] = (16, 32, 32),
     blocks_per_group: Sequence[int] = (2, 2, 2),
     use_layer_norm: bool = False,
+    dtype: jnp.dtype = jnp.float32,
     *,
     key: jaxtyping.PRNGKeyArray,
   ):
@@ -123,7 +127,9 @@ class ResNetTorso(eqx.Module):
     prev_channels = in_channels
     self.downsampling_layers = []
     for channels, k in zip(channels_per_group, downsample_keys, strict=False):
-      layer = make_downsampling_layer(in_channels=prev_channels, out_channels=channels, key=k)
+      layer = make_downsampling_layer(
+        in_channels=prev_channels, out_channels=channels, key=k, dtype=dtype
+      )
       self.downsampling_layers.append(layer)
       prev_channels = channels
 
@@ -177,6 +183,7 @@ class DeepAtariTorso(eqx.Module):
     use_layer_norm: bool = True,
     in_channels: int = 4,
     input_size: int = 84,
+    dtype: jnp.dtype = jnp.float32,
     *,
     key: jaxtyping.PRNGKeyArray,
   ):
@@ -187,6 +194,7 @@ class DeepAtariTorso(eqx.Module):
       blocks_per_group=blocks_per_group,
       use_layer_norm=use_layer_norm,
       in_channels=in_channels,
+      dtype=dtype,
       key=keys[0],
     )
 
@@ -205,6 +213,7 @@ class DeepAtariTorso(eqx.Module):
       depth=len(hidden_sizes),
       activation=jax.nn.relu,
       final_activation=jax.nn.relu,
+      dtype=dtype,
       key=keys[1],
     )
 
@@ -215,7 +224,6 @@ class DeepAtariTorso(eqx.Module):
     output = jax.nn.relu(output)
     # Flatten all dimensions into a single vector
     output = output.reshape(-1)
-    print(f"resnetoutput shape: {output.shape}")
     output = self.mlp_head(output)
     return output
 
@@ -244,3 +252,75 @@ class OAREmbedding(eqx.Module):
     # Concatenate on final dimension.
     embedding = jnp.concatenate([features, action, reward], axis=-1)  # [D+A+1]
     return embedding
+
+
+class R2D2Network(eqx.Module):
+  """The R2D2 network: a convolutional feature extractor, an LSTMCell, and a dueling head."""
+
+  embed: Callable[
+    [jax.Array, jax.Array, jax.Array], jax.Array
+  ]  # Section 2.3: convolutional feature extractor.
+  lstm_cell: eqx.nn.LSTMCell  # Section 2.3 & 3: recurrent cell.
+  dueling_value: eqx.nn.Linear  # Section 2.3: value branch.
+  dueling_advantage: eqx.nn.Linear  # Section 2.3: advantage branch.
+
+  def __init__(
+    self,
+    torso: Callable[[jax.Array], jax.Array],
+    lstm_cell: eqx.nn.LSTMCell,
+    dueling_value: eqx.nn.Linear,
+    dueling_advantage: eqx.nn.Linear,
+    num_actions: int,
+  ):
+    self.embed = OAREmbedding(torso=torso, num_actions=num_actions)
+    self.lstm_cell = lstm_cell
+    self.dueling_value = dueling_value
+    self.dueling_advantage = dueling_advantage
+
+  def __call__(
+    self,
+    observation: jax.Array,
+    action: jax.Array,
+    reward: jax.Array,
+    hidden: tuple[jax.Array, jax.Array],
+  ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
+    features = self.embed(observation, action, reward)
+    h, c = self.lstm_cell(features, hidden)
+    value = self.dueling_value(h)
+    advantage = self.dueling_advantage(h)
+    q_values = value + (advantage - jnp.mean(advantage, axis=-1, keepdims=True))
+    return q_values, (h, c)
+
+
+class R2D2Networks(eqx.Module):
+  online: R2D2Network
+  target: R2D2Network
+
+
+def make_networks_resnet(
+  num_actions: int,
+  in_channels: int,
+  dtype: jnp.dtype = jnp.float32,
+  hidden_size: int = 512,
+  *,
+  key: jaxtyping.PRNGKeyArray,
+) -> R2D2Networks:
+  torso_key, lstm_key, dueling_value_key, dueling_advantage_key = jax.random.split(key, 4)
+
+  online = R2D2Network(
+    torso=DeepAtariTorso(
+      in_channels=in_channels,
+      # output will be concatenated with action and reward, so we subtract them from the hidden size
+      hidden_sizes=(hidden_size - num_actions - 1,),
+      dtype=dtype,
+      key=torso_key,
+    ),
+    lstm_cell=eqx.nn.LSTMCell(hidden_size, hidden_size, dtype=dtype, key=lstm_key),
+    dueling_value=eqx.nn.Linear(hidden_size, 1, dtype=dtype, key=dueling_value_key),
+    dueling_advantage=eqx.nn.Linear(
+      hidden_size, num_actions, dtype=dtype, key=dueling_advantage_key
+    ),
+    num_actions=num_actions,
+  )
+  target = copy.deepcopy(online)
+  return R2D2Networks(online=online, target=target)

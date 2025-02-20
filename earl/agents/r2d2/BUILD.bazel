@@ -3,7 +3,11 @@ load("//tools/py_test:py_test.bzl", "py_test")
 
 py_library(
     name = "r2d2",
-    srcs = ["r2d2.py"],
+    srcs = [
+        "networks.py",
+        "r2d2.py",
+        "utils.py",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "//earl:core",
@@ -23,8 +27,9 @@ py_test(
         ":r2d2",
         "//earl:core",
         "//earl/environment_loop:gymnax_loop",
+        "@pypi//ale_py",
         "@pypi//equinox",
-        "@pypi//gymnax",
+        "@pypi//gymnasium",
         "@pypi//jax",
         "@pypi//jax_loop_utils",
         "@pypi//numpy",

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.agents.r2d2.networks import OAREmbedding
+from earl.agents.r2d2.networks import OAREmbedding, R2D2Networks
 from earl.agents.r2d2.utils import double_q_learning, filter_incremental_update
 from earl.core import ActionAndState, Agent, AgentState, EnvStep, Metrics
 from earl.utils.eqx_filter import filter_cond
@@ -59,48 +59,6 @@ class R2D2Config:
   def __post_init__(self):
     if self.buffer_size % self.seq_length:
       raise ValueError("buffer_size must be divisible by seq_length.")
-
-
-# The R2D2 network: a convolutional feature extractor, an LSTMCell, and a dueling head.
-class R2D2Network(eqx.Module):
-  embed: Callable[
-    [jax.Array, jax.Array, jax.Array], jax.Array
-  ]  # Section 2.3: convolutional feature extractor.
-  lstm_cell: eqx.nn.LSTMCell  # Section 2.3 & 3: recurrent cell.
-  dueling_value: eqx.nn.Linear  # Section 2.3: value branch.
-  dueling_advantage: eqx.nn.Linear  # Section 2.3: advantage branch.
-
-  def __init__(
-    self,
-    torso: Callable[[jax.Array], jax.Array],
-    lstm_cell: eqx.nn.LSTMCell,
-    dueling_value: eqx.nn.Linear,
-    dueling_advantage: eqx.nn.Linear,
-    num_actions: int,
-  ):
-    self.embed = OAREmbedding(torso=torso, num_actions=num_actions)
-    self.lstm_cell = lstm_cell
-    self.dueling_value = dueling_value
-    self.dueling_advantage = dueling_advantage
-
-  def __call__(
-    self,
-    observation: jax.Array,
-    action: jax.Array,
-    reward: jax.Array,
-    hidden: tuple[jax.Array, jax.Array],
-  ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
-    features = self.embed(observation, action, reward)
-    h, c = self.lstm_cell(features, hidden)
-    value = self.dueling_value(h)
-    advantage = self.dueling_advantage(h)
-    q_values = value + (advantage - jnp.mean(advantage, axis=-1, keepdims=True))
-    return q_values, (h, c)
-
-
-class R2D2Networks(eqx.Module):
-  online: R2D2Network
-  target: R2D2Network
 
 
 # Update the AgentState alias to use bundled networks.
