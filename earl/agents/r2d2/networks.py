@@ -147,10 +147,8 @@ class ResNetTorso(eqx.Module):
         key_idx += 1
       self.residual_blocks.append(group_blocks)
 
-  def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-    # Move batch dimension after channels for convolution
-    x = jnp.swapaxes(x, 0, 1)  # (in_channels, batch_size, height, width)
-    output = x
+  def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
+    output = inputs
 
     for (conv, maxpool), blocks in zip(
       self.downsampling_layers, self.residual_blocks, strict=False
@@ -163,8 +161,6 @@ class ResNetTorso(eqx.Module):
       for block in blocks:
         output = block(output)
 
-    # Move batch dimension back to front
-    output = jnp.swapaxes(output, 0, 1)  # (batch_size, out_channels, height, width)
     return output
 
 
@@ -270,7 +266,7 @@ class R2D2Network(eqx.Module):
 
   def __init__(
     self,
-    torso: Callable[[jax.Array], jax.Array]],
+    torso: Callable[[jax.Array], jax.Array],
     lstm_cell: eqx.nn.LSTMCell,
     dueling_value: eqx.nn.Linear,
     dueling_advantage: eqx.nn.Linear,
