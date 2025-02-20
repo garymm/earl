@@ -88,10 +88,10 @@ def make_downsampling_layer(
 class ResNetTorso(eqx.Module):
   """ResNetTorso for visual inputs, inspired by the IMPALA paper."""
 
-  in_channels: int
-  channels_per_group: Sequence[int]
-  blocks_per_group: Sequence[int]
-  use_layer_norm: bool
+  in_channels: int = eqx.field(static=True)
+  channels_per_group: Sequence[int] = eqx.field(static=True)
+  blocks_per_group: Sequence[int] = eqx.field(static=True)
+  use_layer_norm: bool = eqx.field(static=True)
   downsampling_layers: list[tuple[eqx.nn.Conv2d, eqx.nn.MaxPool2d]]
   residual_blocks: list[list[ResidualBlock]]
 
@@ -147,8 +147,10 @@ class ResNetTorso(eqx.Module):
         key_idx += 1
       self.residual_blocks.append(group_blocks)
 
-  def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
-    output = inputs
+  def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+    # Move batch dimension after channels for convolution
+    x = jnp.swapaxes(x, 0, 1)  # (in_channels, batch_size, height, width)
+    output = x
 
     for (conv, maxpool), blocks in zip(
       self.downsampling_layers, self.residual_blocks, strict=False
@@ -161,6 +163,8 @@ class ResNetTorso(eqx.Module):
       for block in blocks:
         output = block(output)
 
+    # Move batch dimension back to front
+    output = jnp.swapaxes(output, 0, 1)  # (batch_size, out_channels, height, width)
     return output
 
 
@@ -173,7 +177,7 @@ class DeepAtariTorso(eqx.Module):
 
   resnet: ResNetTorso
   mlp_head: eqx.nn.MLP
-  use_layer_norm: bool
+  use_layer_norm: bool = eqx.field(static=True)
 
   def __init__(
     self,
@@ -266,7 +270,7 @@ class R2D2Network(eqx.Module):
 
   def __init__(
     self,
-    torso: Callable[[jax.Array], jax.Array],
+    torso: Callable[[jax.Array], jax.Array]],
     lstm_cell: eqx.nn.LSTMCell,
     dueling_value: eqx.nn.Linear,
     dueling_advantage: eqx.nn.Linear,
