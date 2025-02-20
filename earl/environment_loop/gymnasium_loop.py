@@ -477,9 +477,9 @@ class GymnasiumLoop:
           actor_experience = actor_experiences.pop()
           experience_state = self._agent_update_experience(
             agent_state.experience,
-            actor_experience.cycle_result.trajectory,
             actor_experience.actor_state_pre,
             actor_experience.cycle_result.agent_state,
+            actor_experience.cycle_result.trajectory,
           )
           agent_state = dataclasses.replace(agent_state, experience=experience_state)
         del actor_experiences
