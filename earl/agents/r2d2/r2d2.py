@@ -181,7 +181,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
 
   def _loss(
     self, nets: R2D2Networks, opt_state: R2D2OptState, experience_state: R2D2ExperienceState
-  ) -> tuple[Scalar, Metrics]:
+  ) -> tuple[Scalar, R2D2ExperienceState]:
     seq_length = self.config.replay_seq_length
     burn_in = self.config.burn_in
     q_learning_n_steps = self.config.q_learning_n_steps
@@ -249,8 +249,8 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       discounts[:-1],
     )
     batch_loss = 0.5 * jnp.square(batch_td_error).sum(axis=0)
-    # TODO: Add importance sampling.
-    return loss, {}
+    # TODO: Add importance sampling to the experience state.
+    return batch_loss, experience_state
 
   def _update_experience(
     self,

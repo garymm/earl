@@ -80,29 +80,19 @@ def _stack_leaves(pytree_list: list[PyTree]) -> PyTree:
   return pytree
 
 
-@eqx.filter_jit
-def _copy_pytree(pytree: PyTree) -> PyTree:
-  return jax.tree.map(lambda x: x.copy(), pytree)
-
-
-@eqx.filter_grad(has_aux=True)
+@eqx.filter_value_and_grad(has_aux=True)
 def _loss_for_cycle_grad(
   nets_yes_grad,
   nets_no_grad,
   opt_state,
-  experience_state,
-  agent: Agent,
-  check_metrics: typing.Callable[[Mapping], None],
-) -> tuple[Scalar, ArrayMetrics]:
+  experience_state: _ExperienceState,
+  agent: Agent[_Networks, _OptState, _ExperienceState, _ActorState],
+) -> tuple[Scalar, _ExperienceState]:
   # this is a free function so we don't have to pass self as first arg, since filter_grad
   # takes gradient with respect to the first arg.
   nets = eqx.combine(nets_yes_grad, nets_no_grad)
-  loss, metrics = agent.loss(nets, opt_state, experience_state)
-  check_metrics(metrics)
-  # inside jit, return values are guaranteed to be arrays
-  mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
-  mutable_metrics[MetricKey.LOSS] = loss
-  return loss, mutable_metrics
+  loss, experience_state = agent.loss(nets, opt_state, experience_state)
+  return loss, experience_state
 
 
 def _filter_device_put(x: PyTree[typing.Any], device: jax.Device | None):
@@ -536,14 +526,14 @@ class GymnasiumLoop:
   ) -> tuple[tuple[_Networks, _OptState, _ExperienceState], ArrayMetrics]:
     nets, opt_state, experience_state = states
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(nets)
-    grad, metrics = _loss_for_cycle_grad(
+    (loss, experience_state), grad = _loss_for_cycle_grad(
       nets_yes_grad,
       nets_no_grad,
       opt_state,
       experience_state,
       self._agent,
-      self._raise_if_metric_conflicts,
     )
+    metrics: ArrayMetrics = {MetricKey.LOSS: loss}
     grad = jax.lax.pmean(grad, axis_name=self._PMAP_AXIS_NAME)
     grad_means = pytree_leaf_means(grad, "grad_mean")
     metrics.update(grad_means)

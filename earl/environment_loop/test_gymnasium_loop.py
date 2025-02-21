@@ -1,5 +1,5 @@
-import dataclasses
 import time
+from typing import Any
 
 import gymnax
 import gymnax.environments.spaces
@@ -76,16 +76,11 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
     assert action_count_sum > 0
     if not inference:
       assert MetricKey.LOSS in metrics_for_step
-      assert agent._opt_count_metric_key in metrics_for_step
   if inference:
     assert result.agent_state.opt.opt_count == 0
   else:
     assert first_step_num is not None
     assert last_step_num is not None
-    assert (
-      metrics[first_step_num][agent._opt_count_metric_key]
-      != metrics[last_step_num][agent._opt_count_metric_key]
-    )
     expected_opt_count = num_cycles * (num_off_policy_updates or 1)
     assert result.agent_state.opt.opt_count == expected_opt_count
 
@@ -118,12 +113,15 @@ def test_bad_metric_key():
   env = CartPoleEnv()
   env_info = env_info_from_gymnasium(env, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
-  # make the agent return a metric with a key that conflicts with a built-in metric.
   agent = RandomAgent(env_info, env_info.action_space.sample, 1)
-  agent = dataclasses.replace(agent, _opt_count_metric_key=MetricKey.DURATION_SEC)
+
+  def observe_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
+    return {MetricKey.DURATION_SEC: 1}
 
   metric_writer = MemoryWriter()
-  loop = GymnasiumLoop(env, agent, num_envs, next(key_gen), metric_writer=metric_writer)
+  loop = GymnasiumLoop(
+    env, agent, num_envs, next(key_gen), metric_writer=metric_writer, observe_cycle=observe_cycle
+  )
   num_cycles = 1
   steps_per_cycle = 1
   agent_state = agent.new_state(networks, jax.random.PRNGKey(0))

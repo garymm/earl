@@ -160,13 +160,13 @@ def _optimize_from_grads_jit(
   return optimize_from_grads(nets, opt_state, nets_grads)
 
 
-@eqx.filter_jit()
+@eqx.filter_jit(donate="warn-except-first")
 def _loss_jit(
-  nets: _Networks,
-  opt_state: _OptState,
+  non_donated: tuple[_Networks, _OptState],
   experience_state: _ExperienceState,
-  loss: Callable[[_Networks, _OptState, _ExperienceState], tuple[Scalar, Metrics]],
+  loss: Callable[[_Networks, _OptState, _ExperienceState], tuple[Scalar, _ExperienceState]],
 ):
+  nets, opt_state = non_donated
   return loss(nets, opt_state, experience_state)
 
 
@@ -466,20 +466,20 @@ class Agent(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _ActorSt
 
   def loss(
     self, nets: _Networks, opt_state: _OptState, experience_state: _ExperienceState
-  ) -> tuple[Scalar, Metrics]:
-    """Returns loss and metrics. Called after some number of environment steps.
+  ) -> tuple[Scalar, _ExperienceState]:
+    """Returns loss and experience state. Called after some number of environment steps.
 
     Sub-classes should override _loss. This method is a wrapper that adds jit-compilation.
 
-    Note: the returned metrics should not have any keys that conflict with gymnax_loop.MetricKey.
+    The experience_state arg is donated, meaning callers should not access it after calling.
     """
-    return _loss_jit(nets, opt_state, experience_state, self._loss)
+    return _loss_jit((nets, opt_state), experience_state, self._loss)
 
   @abc.abstractmethod
   def _loss(
     self, nets: _Networks, opt_state: _OptState, experience_state: _ExperienceState
-  ) -> tuple[Scalar, Metrics]:
-    """Returns loss and metrics. Called after some number of environment steps.
+  ) -> tuple[Scalar, _ExperienceState]:
+    """Returns loss and experience state. Called after some number of environment steps.
 
     Must be jit-compatible.
     """
