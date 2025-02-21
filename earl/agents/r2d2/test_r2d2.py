@@ -1,12 +1,11 @@
 import ale_py
-import chex
 import gymnasium
 import jax
 import jax.numpy as jnp
 from jax_loop_utils.metric_writers import MemoryWriter
 
 import earl.agents.r2d2.networks as r2d2_networks
-from earl.agents.r2d2.r2d2 import R2D2, R2D2Config, _inverse_value_rescale, _value_rescale
+from earl.agents.r2d2.r2d2 import R2D2, R2D2Config
 from earl.core import env_info_from_gymnasium
 from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 
@@ -58,26 +57,22 @@ def test_r2d2_atari_training():
     key=networks_key,
   )
   num_envs = 2
-  steps_per_cycle = 80
+  steps_per_cycle = 10
   env_info = env_info_from_gymnasium(env, num_envs)
   config = R2D2Config(
-    num_envs_per_learner=num_envs, update_experience_trajectory_length=steps_per_cycle
+    num_envs_per_learner=num_envs,
+    update_experience_trajectory_length=steps_per_cycle,
+    replay_seq_length=steps_per_cycle,
   )
   agent = R2D2(env_info, config)
   agent_state = agent.new_state(networks, agent_key)
   num_cycles = 2
   metric_writer = MemoryWriter()
-  loop = GymnasiumLoop(env, agent, num_envs, loop_key, metric_writer=metric_writer)
+  loop = GymnasiumLoop(
+    env, agent, num_envs, loop_key, metric_writer=metric_writer, vectorization_mode="sync"
+  )
 
   _ = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
   metrics = metric_writer.scalars
   print(metrics)
-
-
-def test_value_rescaling():
-  eps = 0.0001
-  x = jnp.array([-1, 0, 1])
-  y = _value_rescale(x, eps)
-  chex.assert_trees_all_close(y, jnp.array([-(jnp.sqrt(2) - 1) - eps, 0.0, jnp.sqrt(2) - 1 + eps]))
-  chex.assert_trees_all_close(_inverse_value_rescale(y, eps), x, rtol=2e-3, atol=2e-3)
