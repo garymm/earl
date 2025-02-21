@@ -57,7 +57,7 @@ def n_step_bootstrapped_returns(
   discount_t: Array,
   v_t: Array,
   n: int,
-  lambda_t: Array,
+  lambda_t: Array | float = 1.0,
   stop_target_gradients: bool = False,
 ) -> Array:
   """Computes strided n-step bootstrapped return targets over a sequence.

@@ -150,7 +150,7 @@ class ResNetTorso(eqx.Module):
   def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
     output = inputs
 
-    for (conv, maxpool), blocks in zip(
+    for (conv, maxpool), res_blocks in zip(
       self.downsampling_layers, self.residual_blocks, strict=False
     ):
       # Downsampling
@@ -158,7 +158,7 @@ class ResNetTorso(eqx.Module):
       output = maxpool(output)
 
       # Residual blocks
-      for block in blocks:
+      for block in res_blocks:
         output = block(output)
 
     return output

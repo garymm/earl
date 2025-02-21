@@ -19,7 +19,7 @@ from earl.agents.r2d2.utils import (
   signed_parabolic,
   transformed_n_step_q_learning,
 )
-from earl.core import ActionAndState, Agent, AgentState, EnvStep, Metrics
+from earl.core import ActionAndState, Agent, AgentState, EnvStep
 from earl.utils.eqx_filter import filter_cond
 from earl.utils.sharding import shard_along_axis_0
 
@@ -73,6 +73,8 @@ class R2D2Config:
   def __post_init__(self):
     if self.buffer_capacity % self.replay_seq_length:
       raise ValueError("buffer_size must be divisible by replay_seq_length.")
+    if self.burn_in > self.replay_seq_length:
+      raise ValueError("burn_in must be less than or equal to replay_seq_length.")
 
 
 # Update the AgentState alias to use bundled networks.
@@ -139,6 +141,9 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       key=key,
     )
 
+  def _actor_batch_size(self) -> int:
+    return self.config.num_envs_per_learner or self.env_info.num_envs
+
   def _act(
     self, actor_state: R2D2ActorState, nets: R2D2Networks, env_step: EnvStep
   ) -> ActionAndState[R2D2ActorState]:
@@ -149,24 +154,37 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     new_actor_state = R2D2ActorState(lstm_h_c=new_h_c, key=actor_state.key)
     return ActionAndState(action, new_actor_state)
 
-  def _slice_for_replay(self, data: jax.Array, start_idx: jax.Array, length: int):
-    B = data.shape[0]
-    is_tensor = len(data.shape) > 2
-    start_indices = (start_idx, 0)
-    slice_sizes = (start_idx + length, B)
-    if is_tensor:
-      start_indices += (jnp.array(0, dtype=jnp.uint32),) * (len(data.shape) - 2)
-      slice_sizes += data.shape[2:]
-    data_time_first = jnp.swapaxes(data, 0, 1)  # batch first -> time first
-    return jax.lax.dynamic_slice(data_time_first, start_indices, slice_sizes)
+  @functools.partial(jax.jit, static_argnums=(0, 3))
+  def _slice_for_replay(self, data: jax.Array, start_idx: jax.Array, length: int) -> jax.Array:
+    B = self._actor_batch_size()
+    assert start_idx.shape == (B,)
+    assert data.shape[0] == B
+
+    # Create indices [B, length] for each sequence
+    indices = start_idx[:, None] + jnp.arange(length)  # shape (B, length)
+
+    # Expand indices to have the same number of dimensions as data.
+    # data has shape (B, T, ...) and indices should broadcast to (B, length, 1, ..., 1)
+    extra_dims = data.ndim - 2
+    indices_expanded = indices.reshape(indices.shape + (1,) * extra_dims)
+
+    # Use take_along_axis to extract values along the time axis.
+    slices = jnp.take_along_axis(data, indices_expanded, axis=1)  # shape [B, length, ...]
+    # Swap to time-major format [length, B, ...]
+    return jnp.swapaxes(slices, 0, 1)
 
   def _sample_from_experience(
     self, nets: R2D2Networks, experience_state: R2D2ExperienceState, key: PRNGKeyArray
-  ):
+  ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     seq_length = self.config.replay_seq_length
-    B = experience_state.observation.shape[0]
-    seq_size = (experience_state.size) // seq_length
-    seq_idx = jax.random.randint(key, (B,), 0, seq_size - 1)
+    buffer_capacity_sequences = self.config.buffer_capacity // seq_length
+    B = self._actor_batch_size()
+    size_sequences = experience_state.size // seq_length
+    # Avoid sampling indices that are beyond the end of the experience buffer.
+    # Will only happen before the buffer is filled once.
+    seq_idx = jnp.minimum(
+      jax.random.randint(key, (B,), 0, buffer_capacity_sequences - 1), size_sequences - 1
+    )
     obs_idx = seq_idx * seq_length
     obs_time = self._slice_for_replay(experience_state.observation, obs_idx, seq_length)
     action_time = self._slice_for_replay(experience_state.action, obs_idx, seq_length)
@@ -189,14 +207,17 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
 
     # Number of sequences (batch size).
     B = experience_state.observation.shape[0]
+    assert self._actor_batch_size() == B
 
+    # _time means time first, batch last.
     obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre = (
       self._sample_from_experience(nets, experience_state, opt_state.key)
     )
+    assert action_time.shape == (seq_length, B), action_time.shape
     online_hidden = hidden_h_pre, hidden_c_pre
     target_hidden = hidden_h_pre, hidden_c_pre
 
-    def scan_fn(network, hidden, oar):
+    def scan_fn(hidden, oar, network):
       obs, action, reward = oar
       q, new_hidden = jax.vmap(network)(obs, action, reward, hidden)
       return new_hidden, (q, new_hidden)
@@ -214,8 +235,8 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       target_hidden, _ = jax.lax.scan(
         scan_target_fn, target_hidden, (burn_obs, burn_action, burn_reward)
       )
-      obs_time, action_time, reward_time = jax.tree.map(
-        lambda x: x[burn_in:], (obs_time, action_time, reward_time)
+      obs_time, action_time, reward_time, dones_time = jax.tree.map(
+        lambda x: x[burn_in:], (obs_time, action_time, reward_time, dones_time)
       )
 
     _, (online_q, _) = jax.lax.scan(
@@ -228,8 +249,8 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     # Get value-selector actions from online Q-values for double Q-learning.
     selector_actions = jnp.argmax(online_q, axis=-1)
     # set discount to 0 for any time step past a done.
-    mask_time = jnp.ones((B, seq_length)) - jnp.cumsum(dones_time, axis=-1).astype(jnp.bool)
-    discounts = (self.config.discount * mask_time).astype(online_q.dtype)
+    mask_time = jnp.ones_like(dones_time, dtype=online_q.dtype) - jnp.cumsum(dones_time, axis=0)
+    discount_time = (self.config.discount * mask_time).astype(online_q.dtype)
 
     tx_pair = TxPair(
       functools.partial(signed_hyperbolic, eps=eps), functools.partial(signed_parabolic, eps=eps)
@@ -246,11 +267,12 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       target_q[1:],
       selector_actions[1:],
       reward_time[:-1],
-      discounts[:-1],
+      discount_time[:-1],
     )
     batch_loss = 0.5 * jnp.square(batch_td_error).sum(axis=0)
     # TODO: Add importance sampling to the experience state.
-    return batch_loss, experience_state
+    mean_loss = jnp.mean(batch_loss)
+    return mean_loss, experience_state
 
   def _update_experience(
     self,
@@ -259,8 +281,8 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     actor_state_post: R2D2ActorState,
     trajectory: EnvStep,
   ) -> R2D2ExperienceState:
-    num_envs = self.config.num_envs_per_learner or self.env_info.num_envs
-    if trajectory.reward.shape[0] != num_envs:
+    B = self._actor_batch_size()
+    if trajectory.reward.shape[0] != B:
       raise ValueError("trajectory.reward.shape[0] must be equal to num_envs_per_learner.")
     if trajectory.reward.shape[1] != self.config.replay_seq_length:
       raise ValueError("trajectory.reward.shape[1] must be equal to replay_seq_length.")

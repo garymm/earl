@@ -61,8 +61,8 @@ def test_r2d2_atari_training():
   env_info = env_info_from_gymnasium(env, num_envs)
   config = R2D2Config(
     num_envs_per_learner=num_envs,
-    update_experience_trajectory_length=steps_per_cycle,
     replay_seq_length=steps_per_cycle,
+    burn_in=2,
   )
   agent = R2D2(env_info, config)
   agent_state = agent.new_state(networks, agent_key)
@@ -75,4 +75,4 @@ def test_r2d2_atari_training():
   _ = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
   metrics = metric_writer.scalars
-  print(metrics)
+  print(len(metrics))
