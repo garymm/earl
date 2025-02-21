@@ -491,7 +491,9 @@ class GymnasiumLoop:
           )
         with self._networks_for_actor_lock:
           for device in self._networks_for_actor_device:
-            self._networks_for_actor_device[device] = _filter_device_put(agent_state.nets, device)
+            self._networks_for_actor_device[device] = _filter_device_put(
+              pytree_get_index_0(agent_state.nets), device
+            )
 
       step_infos_device_0 = pytree_get_index_0(cycle_result.step_infos)
       trajectory_device_0 = pytree_get_index_0(cycle_result.trajectory)
