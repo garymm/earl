@@ -66,6 +66,13 @@ from earl.utils.eqx_filter import filter_scan
 _logger = logging.getLogger(__name__)
 
 
+def _some_array_leaf(x: PyTree) -> jax.Array:
+  leaves = jax.tree.leaves(x, is_leaf=eqx.is_array)
+  assert leaves
+  assert isinstance(leaves[0], jax.Array)
+  return leaves[0]
+
+
 class _ActorExperience(typing.NamedTuple, typing.Generic[_ActorState]):
   actor_state_pre: _ActorState
   cycle_result: CycleResult
@@ -146,8 +153,10 @@ class _ActorThread(threading.Thread):
     super().__init__()
     self._loop = loop
     self._env = env
+    # if _filter_device_put doesn't copy, then we need to copy the actor state
+    # because the actor state will be donated in each actor thread.
     if (
-      learner_devices == [device]
+      _some_array_leaf(actor_state).device == device
       or learner_devices[0].platform == "cpu"
       and device.platform == "cpu"
     ):
@@ -168,9 +177,9 @@ class _ActorThread(threading.Thread):
       if nets is self.STOP_SIGNAL:
         _logger.debug("stopping actor on device %s", self._device)
         break
-      self._actor_state = self._loop._agent.prepare_for_actor_cycle(self._actor_state)
-      actor_state_pre = copy.deepcopy(self._actor_state)
       with jax.default_device(self._device):
+        self._actor_state = self._loop._agent.prepare_for_actor_cycle(self._actor_state)
+        actor_state_pre = copy.deepcopy(self._actor_state)
         cycle_result = self._loop._actor_cycle(
           self._env, self._actor_state, nets, self._env_step, self._num_steps, self._key
         )
@@ -678,12 +687,10 @@ class GymnasiumLoop:
     """Replicates the agent state for distributed training."""
     # Don't require the caller to replicate the agent state.
     actor_state = agent_state.actor
-    agent_state_leaves = jax.tree.leaves(
-      dataclasses.replace(agent_state, actor=None), is_leaf=eqx.is_array
-    )
-    assert agent_state_leaves
-    assert isinstance(agent_state_leaves[0], jax.Array)
-    if isinstance(agent_state_leaves[0].sharding, jax.sharding.SingleDeviceSharding):
+    agent_state = dataclasses.replace(agent_state, actor=None)
+    agent_state_leaf = _some_array_leaf(agent_state)
+
+    if isinstance(agent_state_leaf.sharding, jax.sharding.SingleDeviceSharding):
       agent_state_arrays, agent_state_static = eqx.partition(agent_state, eqx.is_array)
       agent_state_arrays = jax.device_put_replicated(agent_state_arrays, self._learner_devices)
       agent_state = eqx.combine(agent_state_arrays, agent_state_static)
