@@ -1,42 +1,39 @@
-import ale_py
-import gymnasium
 import jax
 import jax.numpy as jnp
+from gymnax.environments.misc import pong
+from gymnax.environments.spaces import Box, Discrete
 from jax_loop_utils.metric_writers.mlflow import MlflowMetricWriter
 
 import earl.agents.r2d2.networks as r2d2_networks
 from earl.agents.r2d2.r2d2 import R2D2, R2D2Config
-from earl.core import env_info_from_gymnasium
-from earl.environment_loop.gymnasium_loop import GymnasiumLoop
-
-gymnasium.register_envs(ale_py)  # suppress unused import warning
-
-
-env_name = "PongNoFrameskip-v4"
+from earl.core import env_info_from_gymnax
+from earl.environment_loop.gymnax_loop import GymnaxLoop
 
 if __name__ == "__main__":
-  env = gymnasium.make(env_name)
-  env = gymnasium.wrappers.AtariPreprocessing(env, noop_max=0)
-  stack_size = 4
-  env = gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
-  assert isinstance(env.action_space, gymnasium.spaces.Discrete)
-  num_actions = int(env.action_space.n)
+  env = pong.Pong()
+  env_params = env.default_params
+  action_space = env.action_space(env_params)
+  assert isinstance(action_space, Discrete), action_space
+  num_actions = int(action_space.n)
+  observation_space = env.observation_space(env_params)
+  assert isinstance(observation_space, Box), observation_space
+  obs_shape = observation_space.shape
 
   hidden_size = 512
   key = jax.random.PRNGKey(0)
   networks_key, loop_key, agent_key = jax.random.split(key, 3)
   networks = r2d2_networks.make_networks_resnet(
     num_actions=num_actions,
-    in_channels=stack_size,
+    in_channels=obs_shape[-1],
     dtype=jnp.float32,
     hidden_size=hidden_size,
     key=networks_key,
-    input_size=(84, 84),
-    channel_last=False,
+    input_size=(observation_space.shape[0], observation_space.shape[1]),
+    channel_last=True,
   )
   num_envs = 64
   steps_per_cycle = 80
-  env_info = env_info_from_gymnasium(env, num_envs)
+  env_info = env_info_from_gymnax(env, env_params, num_envs)
   config = R2D2Config(
     num_envs_per_learner=num_envs,
     replay_seq_length=steps_per_cycle,
@@ -46,16 +43,16 @@ if __name__ == "__main__":
   agent_state = agent.new_state(networks, agent_key)
 
   # TODO: use tensorboard writer
-  metric_writer = MlflowMetricWriter(experiment_name=env_name)
+  metric_writer = MlflowMetricWriter(experiment_name=env.name)
   gpus = jax.devices("gpu")
-  loop = GymnasiumLoop(
+  loop = GymnaxLoop(
     env,
+    env_params,
     agent,
     num_envs,
     loop_key,
     metric_writer=metric_writer,
-    actor_devices=gpus[0:1],
-    learner_devices=gpus[1:2],
+    devices=gpus,
   )
 
   num_cycles = 2000

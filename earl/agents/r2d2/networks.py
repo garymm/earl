@@ -1,4 +1,5 @@
 import copy
+import math
 from collections.abc import Callable, Sequence
 
 import equinox as eqx
@@ -174,6 +175,7 @@ class DeepAtariTorso(eqx.Module):
   resnet: ResNetTorso
   mlp_head: eqx.nn.MLP
   use_layer_norm: bool = eqx.field(static=True)
+  channel_last: bool = eqx.field(static=True)
 
   def __init__(
     self,
@@ -182,13 +184,15 @@ class DeepAtariTorso(eqx.Module):
     hidden_sizes: Sequence[int] = (512,),
     use_layer_norm: bool = True,
     in_channels: int = 4,
-    input_size: int = 84,
+    input_size: tuple[int, int] = (84, 84),
     dtype: jnp.dtype = jnp.float32,
+    channel_last: bool = True,
     *,
     key: jaxtyping.PRNGKeyArray,
   ):
     keys = jax.random.split(key, 2)
     self.use_layer_norm = use_layer_norm
+    self.channel_last = channel_last
     self.resnet = ResNetTorso(
       channels_per_group=channels_per_group,
       blocks_per_group=blocks_per_group,
@@ -198,13 +202,10 @@ class DeepAtariTorso(eqx.Module):
       key=keys[0],
     )
 
-    # Calculate spatial size through actual pooling steps
-    spatial_size = input_size
-    for _ in range(len(channels_per_group)):
-      spatial_size = (spatial_size + 2 * 1 - 3) // 2 + 1  # MaxPool formula
-
-    spatial_dim = spatial_size * spatial_size
-    in_size = channels_per_group[-1] * spatial_dim
+    # Calculate resnet output size
+    sample_input = jax.ShapeDtypeStruct((in_channels, *input_size), dtype=dtype)
+    sample_output = eqx.filter_eval_shape(self.resnet, sample_input)
+    in_size = int(math.prod(sample_output.shape))
 
     self.mlp_head = eqx.nn.MLP(
       in_size=in_size,
@@ -220,6 +221,8 @@ class DeepAtariTorso(eqx.Module):
   def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
     if x.dtype == jnp.uint8:
       x = x.astype(jnp.float32) / 255.0
+    if self.channel_last:
+      x = jnp.swapaxes(x, 0, self.resnet.in_channels - 1)
     output = self.resnet(x)
     output = jax.nn.relu(output)
     # Flatten all dimensions into a single vector
@@ -300,8 +303,10 @@ class R2D2Networks(eqx.Module):
 def make_networks_resnet(
   num_actions: int,
   in_channels: int,
+  input_size: tuple[int, int] = (84, 84),
   dtype: jnp.dtype = jnp.float32,
   hidden_size: int = 512,
+  channel_last: bool = False,
   *,
   key: jaxtyping.PRNGKeyArray,
 ) -> R2D2Networks:
@@ -310,10 +315,45 @@ def make_networks_resnet(
   online = R2D2Network(
     torso=DeepAtariTorso(
       in_channels=in_channels,
+      input_size=input_size,
       # output will be concatenated with action and reward, so we subtract them from the hidden size
       hidden_sizes=(hidden_size - num_actions - 1,),
+      channel_last=channel_last,
       dtype=dtype,
       key=torso_key,
+    ),
+    lstm_cell=eqx.nn.LSTMCell(hidden_size, hidden_size, dtype=dtype, key=lstm_key),
+    dueling_value=eqx.nn.Linear(hidden_size, 1, dtype=dtype, key=dueling_value_key),
+    dueling_advantage=eqx.nn.Linear(
+      hidden_size, num_actions, dtype=dtype, key=dueling_advantage_key
+    ),
+    num_actions=num_actions,
+  )
+  target = copy.deepcopy(online)
+  return R2D2Networks(online=online, target=target)
+
+
+def make_networks_mlp(
+  num_actions: int,
+  input_size: int,
+  dtype: jnp.dtype = jnp.float32,
+  hidden_size: int = 512,
+  *,
+  key: jaxtyping.PRNGKeyArray,
+) -> R2D2Networks:
+  torso_key_0, torso_key_1, lstm_key, dueling_value_key, dueling_advantage_key = jax.random.split(
+    key, 5
+  )
+
+  online = R2D2Network(
+    torso=eqx.nn.Sequential(
+      (
+        eqx.nn.Lambda(jnp.ravel),
+        eqx.nn.Linear(input_size, hidden_size, dtype=dtype, key=torso_key_0),
+        eqx.nn.Lambda(jax.nn.relu),
+        eqx.nn.Linear(hidden_size, hidden_size - num_actions - 1, dtype=dtype, key=torso_key_1),
+        eqx.nn.Lambda(jax.nn.relu),
+      )
     ),
     lstm_cell=eqx.nn.LSTMCell(hidden_size, hidden_size, dtype=dtype, key=lstm_key),
     dueling_value=eqx.nn.Linear(hidden_size, 1, dtype=dtype, key=dueling_value_key),
