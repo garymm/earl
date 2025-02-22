@@ -90,9 +90,7 @@ def pytree_leaf_means(pytree: PyTree, prefix: str) -> dict[str, jax.Array]:
 
     if isinstance(obj, tuple | list):
       return {
-        k: v
-        for i, item in enumerate(obj)
-        for k, v in traverse(item, f"{current_path}[{i}]").items()
+        k: v for i, item in enumerate(obj) for k, v in traverse(item, f"{current_path}_{i}").items()
       }
 
     if hasattr(obj, "__dict__"):
