@@ -62,6 +62,7 @@ class R2D2Config:
   replay_seq_length: int = 80  # sequence length (m).
   store_hidden_states: bool = False  # If true, store hidden state for first time step per sequence.
   # Gradient clipping suggested by https://www.nature.com/articles/nature14236
+  # TODO: learning rate schedule
   optimizer: optax.GradientTransformation = optax.chain(optax.clip(1.0), optax.adam(1e-4))
   td_lambda: float = 1.0  # Hyperparameter for lambda returns.
   num_optims_per_target_update: int = 1  # how frequently to update the target network.

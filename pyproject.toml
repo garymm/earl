@@ -34,6 +34,8 @@ agent-r2d2 = [
     "gymnasium[atari]>=1.0.0",
     "gymnasium[other]>=1.0.0",
     "chex>=0.1.88",
+    "jax_loop_utils[audio-video]",
+    "jax_loop_utils[mlflow]",      # TODO: remove, use tensorboard writer
     "optax>=0.2.4",
 ]
 cuda = ["jax[cuda12]>=0.4.0", "nvtx>=0.2.10"]

@@ -40,7 +40,7 @@ def test_r2d2_accepts_atari_input():
 
 
 def test_r2d2_atari_training():
-  env = gymnasium.make("BreakoutNoFrameskip-v4")
+  env = gymnasium.make("PongNoFrameskip-v4")
   env = gymnasium.wrappers.AtariPreprocessing(env, noop_max=0)
   stack_size = 4
   env = gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
