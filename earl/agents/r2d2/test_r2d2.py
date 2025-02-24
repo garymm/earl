@@ -200,3 +200,71 @@ def test_sample_from_experience(mlp_agent_and_networks):
   # Hidden state shapes
   assert hidden_h_pre.shape == (agent.env_info.num_envs, networks.online.lstm_cell.hidden_size)
   assert hidden_c_pre.shape == (agent.env_info.num_envs, networks.online.lstm_cell.hidden_size)
+
+
+def test_update_buffer_batch():
+  """Test the update_buffer_batch function with various scenarios."""
+  # Set up parameters
+  seq_length = 4
+  buffer_capacity = 8
+  num_envs = 2
+
+  # Test with pointer at beginning
+  buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
+  pointer = jnp.array(0, dtype=jnp.int32)
+  data = jnp.array(
+    [[True, False, True, False], [True, False, True, False]]
+  )  # Shape is (num_envs, seq_length)
+  updated_buffer = update_buffer_batch(buffer, pointer, data, debug=True)
+
+  # Check buffer has been updated correctly
+  expected_buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
+  expected_buffer = expected_buffer.at[:, 0:4].set(data)
+  chex.assert_equal(updated_buffer, expected_buffer)
+
+  # Test with pointer in middle
+  buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
+  pointer = jnp.array(2, dtype=jnp.int32)
+  updated_buffer = update_buffer_batch(buffer, pointer, data, debug=True)
+
+  # Check buffer has been updated correctly
+  expected_buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
+  expected_buffer = expected_buffer.at[:, 2:6].set(data)
+  chex.assert_equal(updated_buffer, expected_buffer)
+
+  # Test with wrap-around
+  buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
+  pointer = jnp.array(6, dtype=jnp.int32)
+  updated_buffer = update_buffer_batch(buffer, pointer, data, debug=True)
+
+  # Check buffer has been updated correctly
+  expected_buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
+  # For wrap-around, data will be at positions 6:8 and 0:2
+  expected_buffer = expected_buffer.at[:, 6:8].set(data[:, 0:2])
+  expected_buffer = expected_buffer.at[:, 0:2].set(data[:, 2:4])
+  chex.assert_equal(updated_buffer, expected_buffer)
+
+  # Test with nested dimensions
+  hidden_size = 3
+  buffer = jnp.zeros((num_envs, buffer_capacity, hidden_size), dtype=jnp.float32)
+  data = jnp.ones((num_envs, seq_length, hidden_size), dtype=jnp.float32)
+  data = data * jnp.arange(1, num_envs + 1).reshape(num_envs, 1, 1)  # Different values per env
+
+  pointer = jnp.array(1, dtype=jnp.int32)
+  updated_buffer = update_buffer_batch(buffer, pointer, data, debug=True)
+
+  # Check buffer shape and updated values
+  chex.assert_shape(updated_buffer, (num_envs, buffer_capacity, hidden_size))
+
+  # Verify values in updated region
+  expected_buffer = jnp.zeros((num_envs, buffer_capacity, hidden_size), dtype=jnp.float32)
+  expected_buffer = expected_buffer.at[:, 1:5].set(data)
+  chex.assert_equal(updated_buffer, expected_buffer)
+
+  # Also verify specific values to ensure environment-specific data was preserved
+  for env_idx in range(num_envs):
+    # Check that the updated region has values equal to env_idx + 1
+    chex.assert_equal(updated_buffer[env_idx, 1:5], jnp.ones((4, hidden_size)) * (env_idx + 1))
+    # Check that areas outside the updated region remain zeros
+    chex.assert_trees_all_equal(updated_buffer[env_idx, 0], jnp.zeros(hidden_size))
+    chex.assert_trees_all_equal(updated_buffer[env_idx, 5:], jnp.zeros((3, hidden_size)))

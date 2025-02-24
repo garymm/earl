@@ -3,7 +3,6 @@ import functools
 from collections.abc import Sequence
 from typing import Any
 
-import chex
 import equinox as eqx
 import gymnax.environments.spaces as gymnax_spaces
 import jax
@@ -18,6 +17,7 @@ from earl.agents.r2d2.utils import (
   signed_hyperbolic,
   signed_parabolic,
   transformed_n_step_q_learning,
+  update_buffer_batch,
 )
 from earl.core import ActionAndState, Agent, AgentState, EnvStep
 from earl.utils.eqx_filter import filter_cond
@@ -118,7 +118,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     action = jnp.zeros((num_envs, buffer_capacity), dtype=action_space.dtype)
     reward = jnp.zeros((num_envs, buffer_capacity))
     new_episode = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool)
-    pointer = jnp.zeros((num_envs,), dtype=jnp.uint32)
+    pointer = jnp.zeros((), dtype=jnp.uint32)
     size = jnp.zeros((num_envs,), dtype=jnp.uint32)
     if self.config.store_hidden_states:
       hidden_state_h = jnp.zeros((num_envs, sequence_capacity, nets.online.lstm_cell.hidden_size))
@@ -300,31 +300,25 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     buffer_capacity = self.config.buffer_capacity
     seq_length = self.config.replay_seq_length
 
-    def update_buffer(buffer, pointer, data):
-      chex.assert_shape(data, (seq_length, ...))
-      chex.assert_shape(buffer, (buffer_capacity, ...))
-      start_indices = (pointer,) + (jnp.array(0, dtype=jnp.uint32),) * (len(buffer.shape) - 1)
-      return jax.lax.dynamic_update_slice(buffer, data, start_indices)
-
-    new_obs = jax.vmap(update_buffer)(
+    new_obs = update_buffer_batch(
       experience_state.observation,
       experience_state.pointer,
       trajectory.obs,
     )
 
-    new_actions = jax.vmap(update_buffer)(
+    new_actions = update_buffer_batch(
       experience_state.action,
       experience_state.pointer,
       trajectory.prev_action,
     )
 
-    new_rewards = jax.vmap(update_buffer)(
+    new_rewards = update_buffer_batch(
       experience_state.reward,
       experience_state.pointer,
       trajectory.reward,
     )
 
-    new_dones = jax.vmap(update_buffer)(
+    new_dones = update_buffer_batch(
       experience_state.new_episode,
       experience_state.pointer,
       trajectory.new_episode,

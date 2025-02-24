@@ -223,3 +223,35 @@ def filter_incremental_update(new_tensors: Any, old_tensors: Any, step_size: flo
 
   updated = optax.incremental_update(new_tensors, old_tensors, step_size)
   return eqx.combine(updated, static)
+
+
+def update_buffer_batch(buffer, pointer, data, debug=False):
+  """
+  Update buffer with data for all environments at once.
+
+  Args:
+    buffer: Array of shape (num_envs, buffer_capacity, ...)
+    pointer: Scalar uint32 index where to insert data (same for all environments)
+    data: Array of shape (num_envs, seq_length, ...)
+    debug: Whether to print debug information
+
+  Returns:
+    Updated buffer of shape (num_envs, buffer_capacity, ...)
+  """
+  if debug:
+    jax.debug.print(
+      "update_buffer_batch: buffer.shape: {}, data.shape: {}", buffer.shape, data.shape
+    )
+
+  # Start indices for the update:
+  # - First dimension: start at the first environment (index 0)
+  # - Second dimension: start at the pointer
+  # - Additional dimensions: start at index 0
+  start_indices = (jnp.array(0, dtype=jnp.uint32), pointer) + tuple(
+    jnp.array(0, dtype=jnp.uint32) for _ in range(len(buffer.shape) - 2)
+  )
+
+  if debug:
+    jax.debug.print("start_indices: {}", start_indices)
+
+  return jax.lax.dynamic_update_slice(buffer, data, start_indices)
