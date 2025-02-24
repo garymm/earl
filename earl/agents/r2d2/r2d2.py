@@ -96,7 +96,9 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     init_hidden = self._init_lstm_hidden(batch_size, nets.online.lstm_cell)
     return R2D2ActorState(lstm_h_c=init_hidden, key=key)
 
-  def _init_lstm_hidden(self, batch_size: int, lstm_cell: eqx.nn.LSTMCell) -> Any:
+  def _init_lstm_hidden(
+    self, batch_size: int, lstm_cell: eqx.nn.LSTMCell
+  ) -> tuple[jax.Array, jax.Array]:
     h = jnp.zeros((batch_size, lstm_cell.hidden_size))
     c = jnp.zeros((batch_size, lstm_cell.hidden_size))
     return (h, c)
@@ -192,10 +194,18 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     reward_time = self._slice_for_replay(experience_state.reward, obs_idx, seq_length)
     dones_time = self._slice_for_replay(experience_state.new_episode, obs_idx, seq_length)
     if self.config.store_hidden_states:
-      hidden_h_pre = experience_state.hidden_state_h[seq_idx]
-      hidden_c_pre = experience_state.hidden_state_c[seq_idx]
+      hidden_h_pre = experience_state.hidden_state_h[jnp.arange(B), seq_idx]
+      hidden_c_pre = experience_state.hidden_state_c[jnp.arange(B), seq_idx]
     else:
       hidden_h_pre, hidden_c_pre = self._init_lstm_hidden(B, nets.online.lstm_cell)
+
+    assert hidden_h_pre.shape == (B, nets.online.lstm_cell.hidden_size)
+    assert hidden_c_pre.shape == (B, nets.online.lstm_cell.hidden_size)
+    assert isinstance(self.env_info.observation_space, gymnax_spaces.Box)
+    assert obs_time.shape == (seq_length, B, *self.env_info.observation_space.shape)
+    assert action_time.shape == (seq_length, B)
+    assert reward_time.shape == (seq_length, B)
+    assert dones_time.shape == (seq_length, B)
     return obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre
 
   def _loss(
