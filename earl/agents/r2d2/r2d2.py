@@ -64,7 +64,6 @@ class R2D2Config:
   # Gradient clipping suggested by https://www.nature.com/articles/nature14236
   # TODO: learning rate schedule
   optimizer: optax.GradientTransformation = optax.chain(optax.clip(1.0), optax.adam(1e-4))
-  td_lambda: float = 1.0  # Hyperparameter for lambda returns.
   num_optims_per_target_update: int = 1  # how frequently to update the target network.
   target_update_step_size: float = 0.01  # how much to update the target network.
   num_envs_per_learner: int = 0
@@ -73,7 +72,7 @@ class R2D2Config:
 
   def __post_init__(self):
     if self.buffer_capacity % self.replay_seq_length:
-      raise ValueError("buffer_size must be divisible by replay_seq_length.")
+      raise ValueError("buffer_capacity must be divisible by replay_seq_length.")
     if self.burn_in > self.replay_seq_length:
       raise ValueError("burn_in must be less than or equal to replay_seq_length.")
 
