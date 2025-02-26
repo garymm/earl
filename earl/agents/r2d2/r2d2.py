@@ -11,17 +11,16 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.agents.r2d2.networks import R2D2Networks
+from earl.agents.r2d2.networks import R2D2Network, R2D2Networks
 from earl.agents.r2d2.utils import (
+  IDENTITY_PAIR,
   TxPair,
-  filter_incremental_update,
   signed_hyperbolic,
   signed_parabolic,
   transformed_n_step_q_learning,
   update_buffer_batch,
 )
 from earl.core import ActionAndState, Agent, AgentState, EnvStep
-from earl.utils.eqx_filter import filter_cond
 from earl.utils.sharding import shard_along_axis_0
 
 
@@ -36,6 +35,7 @@ class R2D2OptState(eqx.Module):
 class R2D2ActorState(eqx.Module):
   lstm_h_c: Any  # Tuple of (h, c); see Section 2.3.
   key: PRNGKeyArray
+  num_steps: jax.Array = eqx.field(default_factory=lambda: jnp.array(0, dtype=jnp.uint32))
 
 
 # R2D2 Experience state holds a replay buffer of fixed-length sequences.
@@ -54,8 +54,9 @@ class R2D2ExperienceState(eqx.Module):
 # Configuration for R2D2 agent.
 @dataclasses.dataclass(eq=True, frozen=True)
 class R2D2Config:
+  epsilon_greedy_schedule: optax.Schedule
+  debug: bool = False
   discount: float = 0.997  # Section 2.3: discount factor.
-  epsilon_greedy: float = 0.01  # Section 2.3: epsilon-greedy parameter.
   q_learning_n_steps: int = 5  # Section 2.3: n-step return.
   burn_in: int = 40  # Section 3: burn-in length for LSTMCell.
   priority_exponent: float = 0.9  # Section 2.3: priority exponent.
@@ -95,7 +96,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
   def _new_actor_state(self, nets: R2D2Networks, key: PRNGKeyArray) -> R2D2ActorState:
     batch_size = self.env_info.num_envs
     init_hidden = self._init_lstm_hidden(batch_size, nets.online.lstm_cell)
-    return R2D2ActorState(lstm_h_c=init_hidden, key=key)
+    return R2D2ActorState(lstm_h_c=init_hidden, key=key, num_steps=jnp.array(0, dtype=jnp.uint32))
 
   def _init_lstm_hidden(
     self, batch_size: int, lstm_cell: eqx.nn.LSTMCell
@@ -155,8 +156,29 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       env_step.obs, env_step.prev_action, env_step.reward, actor_state.lstm_h_c
     )
     key = jax.random.split(actor_state.key, 2)[1]
-    action = distrax.EpsilonGreedy(q_values, self.config.epsilon_greedy).sample(seed=key)
-    new_actor_state = R2D2ActorState(lstm_h_c=new_h_c, key=key)
+    epsilon = self.config.epsilon_greedy_schedule(actor_state.num_steps)
+    action = distrax.EpsilonGreedy(
+      q_values,
+      epsilon,  # pyright: ignore[reportArgumentType]
+    ).sample(seed=key)
+    new_actor_state = R2D2ActorState(lstm_h_c=new_h_c, key=key, num_steps=actor_state.num_steps + 1)
+    if self.config.debug:
+      jax.debug.print("Q-values before action: {}", q_values)
+      q_diff = q_values[:, 1] - q_values[:, 0]
+      jax.debug.print(
+        "Q-value difference (1-0): mean={}, min={}, max={}",
+        jnp.mean(q_diff),
+        jnp.min(q_diff),
+        jnp.max(q_diff),
+      )
+      lstm_h, lstm_c = actor_state.lstm_h_c
+      jax.debug.print(
+        "LSTM h,c stats - h_mean: {}, h_std: {}, c_mean: {}, c_std: {}",
+        jnp.mean(lstm_h),
+        jnp.std(lstm_h),
+        jnp.mean(lstm_c),
+        jnp.std(lstm_c),
+      )
     return ActionAndState(action, new_actor_state)
 
   @functools.partial(jax.jit, static_argnums=(0, 3))
@@ -226,6 +248,12 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre = (
       self._sample_from_experience(nets, experience_state, opt_state.key)
     )
+
+    # # Debug the sampled experience data
+    # jax.debug.print("Sampled dones_time shape: {}", dones_time.shape)
+    if self.config.debug:
+      jax.debug.print("Sampled dones_time content: {}", dones_time)
+
     assert action_time.shape == (seq_length, B), action_time.shape
     online_hidden = hidden_h_pre, hidden_c_pre
     target_hidden = hidden_h_pre, hidden_c_pre
@@ -251,6 +279,8 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       obs_time, action_time, reward_time, dones_time = jax.tree.map(
         lambda x: x[burn_in:], (obs_time, action_time, reward_time, dones_time)
       )
+      # Debug after burn-in
+      # jax.debug.print("Dones after burn-in: {}", dones_time)
 
     _, (online_q, _) = jax.lax.scan(
       scan_online_fn, online_hidden, (obs_time, action_time, reward_time)
@@ -265,9 +295,25 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     mask_time = jnp.ones_like(dones_time, dtype=online_q.dtype) - jnp.cumsum(dones_time, axis=0)
     discount_time = (self.config.discount * mask_time).astype(online_q.dtype)
 
-    tx_pair = TxPair(
-      functools.partial(signed_hyperbolic, eps=eps), functools.partial(signed_parabolic, eps=eps)
-    )
+    # Debug prints for Q-values and masking
+    if self.config.debug:
+      jax.debug.print("Online Q-values mean: {}", jnp.mean(online_q))
+      jax.debug.print("Online Q-values action 0 mean: {}", jnp.mean(online_q[..., 0]))
+      jax.debug.print("Online Q-values action 1 mean: {}", jnp.mean(online_q[..., 1]))
+      jax.debug.print("Target Q-values mean: {}", jnp.mean(target_q))
+      jax.debug.print("Q-value difference: {}", jnp.mean(online_q[..., 1] - online_q[..., 0]))
+      jax.debug.print("Q-values variance: {}", jnp.var(online_q))
+      # jax.debug.print("dones_time sum: {}", jnp.sum(dones_time))
+    # jax.debug.print("mask_time min: {}, max: {}", jnp.min(mask_time), jnp.max(mask_time))
+    # jax.debug.print(
+    #   "discount_time min: {}, max: {}", jnp.min(discount_time), jnp.max(discount_time)
+    # )
+
+    tx_pair = IDENTITY_PAIR
+    if self.config.value_rescaling_epsilon > 0:
+      tx_pair = TxPair(
+        functools.partial(signed_hyperbolic, eps=eps), functools.partial(signed_parabolic, eps=eps)
+      )
 
     batch_td_error_fn = jax.vmap(
       functools.partial(transformed_n_step_q_learning, n=q_learning_n_steps, tx_pair=tx_pair),
@@ -283,6 +329,15 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       discount_time[:-1],
     )
     batch_loss = 0.5 * jnp.square(batch_td_error).sum(axis=0)
+    # Debug TD errors
+    # jax.debug.print(
+    #   "TD error mean: {}, min: {}, max: {}",
+    #   jnp.mean(batch_td_error),
+    #   jnp.min(batch_td_error),
+    #   jnp.max(batch_td_error),
+    # )
+    # jax.debug.print("Batch loss mean: {}", jnp.mean(batch_loss))
+
     # TODO: Add importance sampling to the experience state.
     mean_loss = jnp.mean(batch_loss)
     return mean_loss, experience_state
@@ -325,6 +380,9 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       experience_state.pointer,
       trajectory.new_episode,
     )
+    # jax.debug.print("pointer: {}", experience_state.pointer)
+    # jax.debug.print("trajectory.new_episode: {}", trajectory.new_episode)
+    # jax.debug.print("new_dones: {}", new_dones)
 
     def update_hidden(hidden_buffer, pointer, init_hidden):
       seq_index = pointer // seq_length
