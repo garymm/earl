@@ -34,6 +34,7 @@ agent-r2d2 = [
     "gymnasium[atari]>=1.0.0",
     "gymnasium[other]>=1.0.0",
     "chex>=0.1.88",
+    "distrax>=0.1.5",
     "jax_loop_utils[audio-video]",
     "jax_loop_utils[mlflow]",      # TODO: remove, use tensorboard writer
     "optax>=0.2.4",
@@ -72,6 +73,12 @@ select = [
     "I",   # isort
     "SIM", # flake8-simplify
     "UP",  # pyupgrade
+]
+[tool.uv]
+# restrict to platforms we care about so that version resolution is faster and more likely to succeed
+# (e.g. don't fail if a package isn't built for windows)
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version>='3.12'",
 ]
 
 [tool.uv.sources]

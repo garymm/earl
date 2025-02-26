@@ -12,6 +12,7 @@ py_library(
     deps = [
         "//earl:core",
         "@pypi//chex",
+        "@pypi//distrax",
         "@pypi//equinox",
         "@pypi//jax",
         "@pypi//jaxtyping",

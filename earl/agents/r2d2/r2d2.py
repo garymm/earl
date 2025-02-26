@@ -3,6 +3,7 @@ import functools
 from collections.abc import Sequence
 from typing import Any
 
+import distrax
 import equinox as eqx
 import gymnax.environments.spaces as gymnax_spaces
 import jax
@@ -27,7 +28,7 @@ from earl.utils.sharding import shard_along_axis_0
 # ------------------------------------------------------------------
 class R2D2OptState(eqx.Module):
   optax_state: optax.OptState
-  target_update_count: jax.Array  # scalar; counts steps since last target network update
+  optimize_count: jax.Array  # scalar; counts steps since last target network update
   key: PRNGKeyArray
 
 
@@ -54,6 +55,7 @@ class R2D2ExperienceState(eqx.Module):
 @dataclasses.dataclass(eq=True, frozen=True)
 class R2D2Config:
   discount: float = 0.997  # Section 2.3: discount factor.
+  epsilon_greedy: float = 0.01  # Section 2.3: epsilon-greedy parameter.
   q_learning_n_steps: int = 5  # Section 2.3: n-step return.
   burn_in: int = 40  # Section 3: burn-in length for LSTMCell.
   priority_exponent: float = 0.9  # Section 2.3: priority exponent.
@@ -139,7 +141,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
   def _new_opt_state(self, nets: R2D2Networks, key: PRNGKeyArray) -> R2D2OptState:
     return R2D2OptState(
       optax_state=self.config.optimizer.init(eqx.filter(nets.online, eqx.is_array)),
-      target_update_count=jnp.array(0, dtype=jnp.uint32),
+      optimize_count=jnp.array(0, dtype=jnp.uint32),
       key=key,
     )
 
@@ -152,8 +154,9 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     q_values, new_h_c = eqx.filter_vmap(nets.online)(
       env_step.obs, env_step.prev_action, env_step.reward, actor_state.lstm_h_c
     )
-    action = jnp.argmax(q_values, axis=-1)
-    new_actor_state = R2D2ActorState(lstm_h_c=new_h_c, key=actor_state.key)
+    key = jax.random.split(actor_state.key, 2)[1]
+    action = distrax.EpsilonGreedy(q_values, self.config.epsilon_greedy).sample(seed=key)
+    new_actor_state = R2D2ActorState(lstm_h_c=new_h_c, key=key)
     return ActionAndState(action, new_actor_state)
 
   @functools.partial(jax.jit, static_argnums=(0, 3))
@@ -374,23 +377,18 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     updates, optax_state = self.config.optimizer.update(nets_grads.online, opt_state.optax_state)
     new_online = eqx.apply_updates(nets.online, updates)
 
-    def update_target():
-      return filter_incremental_update(
-        new_online, nets.target, self.config.target_update_step_size
-      ), jnp.zeros_like(opt_state.target_update_count)
-
-    def keep_target():
-      return nets.target, opt_state.target_update_count + 1
-
-    new_target, new_count = filter_cond(
-      opt_state.target_update_count + 1 >= self.config.target_update_period,
-      update_target,
-      keep_target,
+    target_arrays, target_other = eqx.partition(nets.target, eqx.is_array)
+    target_arrays = optax.periodic_update(
+      eqx.partition(new_online, eqx.is_array)[0],
+      target_arrays,
+      opt_state.optimize_count,
+      self.config.target_update_period,
     )
-    new_nets = R2D2Networks(online=new_online, target=new_target)
+    assert isinstance(target_arrays, R2D2Network)
+    new_nets = R2D2Networks(online=new_online, target=eqx.combine(target_arrays, target_other))
     new_opt_state = R2D2OptState(
       optax_state=optax_state,
-      target_update_count=new_count,
+      optimize_count=opt_state.optimize_count + 1,
       key=jax.random.split(opt_state.key, 2)[1],
     )
     return new_nets, new_opt_state
