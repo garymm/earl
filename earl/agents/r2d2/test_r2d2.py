@@ -18,6 +18,7 @@ from earl.agents.r2d2.r2d2 import R2D2, R2D2Config
 from earl.agents.r2d2.utils import update_buffer_batch
 from earl.core import EnvInfo, env_info_from_gymnax
 from earl.environment_loop.gymnax_loop import GymnaxLoop
+from earl.experiments.run_experiment import _config_to_dict
 from earl.metric_key import MetricKey
 
 gymnasium.register_envs(ale_py)
@@ -106,30 +107,43 @@ def test_r2d2_learns_cartpole():
     input_size=int(math.prod(observation_space.shape)),
     dtype=jnp.float32,
     hidden_size=hidden_size,
+    use_lstm=False,
     key=networks_key,
   )
-  num_envs = 2
+  num_envs = 256
   burn_in = 0
-  steps_per_cycle = 20 + burn_in
-  num_cycles = 10
+  steps_per_cycle = 80 + burn_in
+  num_cycles = 10000
   env_info = env_info_from_gymnax(env, env_params, num_envs)
+  num_off_policy_optims_per_cycle = 1
   config = R2D2Config(
-    epsilon_greedy_schedule=optax.linear_schedule(
-      init_value=0.5, end_value=0.0001, transition_steps=steps_per_cycle * num_cycles
+    epsilon_greedy_schedule_args=dict(
+      init_value=0.9, end_value=0.005, transition_steps=steps_per_cycle * num_cycles
     ),
-    debug=True,
+    q_learning_n_steps=2,
+    debug=False,
     buffer_capacity=steps_per_cycle * 20,
-    target_update_period=min((2, int(num_cycles / 10))),
+    # target_update_period=max((2, int(num_cycles * num_off_policy_optims_per_cycle / 10))),
     num_envs_per_learner=num_envs,
     replay_seq_length=steps_per_cycle,
     burn_in=burn_in,
     value_rescaling_epsilon=0.0,
+    num_off_policy_optims_per_cycle=num_off_policy_optims_per_cycle,
+    gradient_clipping_max_delta=0.5,
+    learning_rate_schedule_name="cosine_onecycle_schedule",
+    learning_rate_schedule_args=dict(
+      transition_steps=steps_per_cycle * num_cycles / 2,
+      peak_value=1e-3,
+    ),
+    target_update_step_size=0.0001,
   )
   agent = R2D2(env_info, config)
   memory_writer = MemoryWriter()
   metric_writer = MultiWriter(
     (memory_writer, MlflowMetricWriter(experiment_name=env.name)),
   )
+  config_dict = _config_to_dict(config)
+  metric_writer.write_hparams(config_dict)
   loop = GymnaxLoop(env, env.default_params, agent, num_envs, loop_key, metric_writer=metric_writer)
   agent_state = agent.new_state(networks, agent_key)
   _ = loop.run(agent_state, num_cycles, steps_per_cycle)
@@ -141,9 +155,8 @@ def test_r2d2_learns_cartpole():
   )
   print(f"First 5 cycles avg length: {float(np.mean(episode_lengths[:5])):.2f}")
   print(f"Last 5 cycles avg length: {float(np.mean(episode_lengths[-5:])):.2f}")
-  print(
-    f"Improvement ratio: {float(np.mean(episode_lengths[-5:])) / float(np.mean(episode_lengths[:5])):.2f}x"
-  )
+  improvement_ratio = float(np.mean(episode_lengths[-5:])) / float(np.mean(episode_lengths[:5]))
+  print(f"Improvement ratio: {improvement_ratio:.2f}x")
 
   assert len(metrics) == num_cycles
   # Due to auto-resets, the reward is always constant, but it's a survival task

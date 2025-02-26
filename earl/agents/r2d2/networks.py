@@ -263,14 +263,14 @@ class R2D2Network(eqx.Module):
   embed: Callable[
     [jax.Array, jax.Array, jax.Array], jax.Array
   ]  # Section 2.3: convolutional feature extractor.
-  lstm_cell: eqx.nn.LSTMCell  # Section 2.3 & 3: recurrent cell.
+  lstm_cell: eqx.nn.LSTMCell | None  # Section 2.3 & 3: recurrent cell.
   dueling_value: eqx.nn.Linear  # Section 2.3: value branch.
   dueling_advantage: eqx.nn.Linear  # Section 2.3: advantage branch.
 
   def __init__(
     self,
     torso: Callable[[jax.Array], jax.Array],
-    lstm_cell: eqx.nn.LSTMCell,
+    lstm_cell: eqx.nn.LSTMCell | None,
     dueling_value: eqx.nn.Linear,
     dueling_advantage: eqx.nn.Linear,
     num_actions: int,
@@ -288,10 +288,15 @@ class R2D2Network(eqx.Module):
     hidden: tuple[jax.Array, jax.Array],
   ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
     features = self.embed(observation, action, reward)
-    h, c = self.lstm_cell(features, hidden)
+    if self.lstm_cell is not None:
+      h, c = self.lstm_cell(features, hidden)
+    else:
+      h = features
+      c = jnp.zeros_like(features)
     value = self.dueling_value(h)
     advantage = self.dueling_advantage(h)
     q_values = value + (advantage - jnp.mean(advantage, axis=-1, keepdims=True))
+    # q_values = advantage
     return q_values, (h, c)
 
 
@@ -338,6 +343,7 @@ def make_networks_mlp(
   input_size: int,
   dtype: jnp.dtype = jnp.float32,
   hidden_size: int = 512,
+  use_lstm: bool = True,
   *,
   key: jaxtyping.PRNGKeyArray,
 ) -> R2D2Networks:
@@ -355,7 +361,9 @@ def make_networks_mlp(
         eqx.nn.Lambda(jax.nn.relu),
       )
     ),
-    lstm_cell=eqx.nn.LSTMCell(hidden_size, hidden_size, dtype=dtype, key=lstm_key),
+    lstm_cell=eqx.nn.LSTMCell(hidden_size, hidden_size, dtype=dtype, key=lstm_key)
+    if use_lstm
+    else None,
     dueling_value=eqx.nn.Linear(hidden_size, 1, dtype=dtype, key=dueling_value_key),
     dueling_advantage=eqx.nn.Linear(
       hidden_size, num_actions, dtype=dtype, key=dueling_advantage_key

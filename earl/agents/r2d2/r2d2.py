@@ -54,7 +54,7 @@ class R2D2ExperienceState(eqx.Module):
 # Configuration for R2D2 agent.
 @dataclasses.dataclass(eq=True, frozen=True)
 class R2D2Config:
-  epsilon_greedy_schedule: optax.Schedule
+  epsilon_greedy_schedule_args: dict[str, Any] = dataclasses.field(default_factory=dict)
   debug: bool = False
   discount: float = 0.997  # Section 2.3: discount factor.
   q_learning_n_steps: int = 5  # Section 2.3: n-step return.
@@ -64,20 +64,38 @@ class R2D2Config:
   buffer_capacity: int = 10000  # Total number of time steps in replay.
   replay_seq_length: int = 80  # sequence length (m).
   store_hidden_states: bool = False  # If true, store hidden state for first time step per sequence.
-  # Gradient clipping suggested by https://www.nature.com/articles/nature14236
-  # TODO: learning rate schedule
-  optimizer: optax.GradientTransformation = optax.chain(optax.clip(1.0), optax.adam(1e-4))
   num_optims_per_target_update: int = 1  # how frequently to update the target network.
-  target_update_step_size: float = 0.01  # how much to update the target network.
+  target_update_step_size: float = 0.001  # how much to update the target network.
   num_envs_per_learner: int = 0
+  gradient_clipping_max_delta: float = 1.0
+  learning_rate_schedule_name: str = "constant_schedule"
+  learning_rate_schedule_args: dict[str, Any] = dataclasses.field(default_factory=dict)
   """Number of environments per learner. 0 means use env_info.num_envs."""
   value_rescaling_epsilon: float = 1e-3  # Epsilon parameter for h and h⁻¹.
+  num_off_policy_optims_per_cycle: int = 10  # Number of off-policy optims per cycle.
 
   def __post_init__(self):
     if self.buffer_capacity % self.replay_seq_length:
       raise ValueError("buffer_capacity must be divisible by replay_seq_length.")
     if self.burn_in > self.replay_seq_length:
       raise ValueError("burn_in must be less than or equal to replay_seq_length.")
+    if self.target_update_step_size <= 0 and not self.target_update_period:
+      raise ValueError(
+        "target_update_step_size must be greater than 0 or target_update_period must be set."
+      )
+
+  @property
+  def epsilon_greedy_schedule(self) -> optax.Schedule:
+    return optax.linear_schedule(**self.epsilon_greedy_schedule_args)
+
+  @property
+  def optimizer(self) -> optax.GradientTransformation:
+    learning_rate_schedule = getattr(optax, self.learning_rate_schedule_name)(
+      **self.learning_rate_schedule_args
+    )
+    return optax.chain(
+      optax.clip(self.gradient_clipping_max_delta), optax.adam(learning_rate_schedule)
+    )
 
 
 # Update the AgentState alias to use bundled networks.
@@ -91,19 +109,26 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
   https://openreview.net/forum?id=r1lyTjAqYX
   """
 
-  config: R2D2Config
+  config: R2D2Config = eqx.field(static=True)
 
   def _new_actor_state(self, nets: R2D2Networks, key: PRNGKeyArray) -> R2D2ActorState:
     batch_size = self.env_info.num_envs
-    init_hidden = self._init_lstm_hidden(batch_size, nets.online.lstm_cell)
+    init_hidden = self._init_lstm_hidden(batch_size, nets.online)
     return R2D2ActorState(lstm_h_c=init_hidden, key=key, num_steps=jnp.array(0, dtype=jnp.uint32))
 
-  def _init_lstm_hidden(
-    self, batch_size: int, lstm_cell: eqx.nn.LSTMCell
-  ) -> tuple[jax.Array, jax.Array]:
-    h = jnp.zeros((batch_size, lstm_cell.hidden_size))
-    c = jnp.zeros((batch_size, lstm_cell.hidden_size))
-    return (h, c)
+  def _init_lstm_hidden(self, batch_size: int, network: R2D2Network) -> tuple[jax.Array, jax.Array]:
+    if network.lstm_cell is None:
+      key = jax.random.PRNGKey(0)
+      sample_input = jnp.zeros((batch_size, *self.env_info.observation_space.sample(key).shape))
+      init_hidden = eqx.filter_vmap(network.embed)(
+        sample_input,
+        jnp.zeros((batch_size,), dtype=self.env_info.action_space.sample(key).dtype),
+        jnp.zeros((batch_size,), dtype=jnp.float32),
+      )
+      return init_hidden, init_hidden
+    h = jnp.zeros((batch_size, network.lstm_cell.hidden_size))
+    c = jnp.zeros((batch_size, network.lstm_cell.hidden_size))
+    return h, c
 
   def _new_experience_state(self, nets: R2D2Networks, key: PRNGKeyArray) -> R2D2ExperienceState:
     buffer_capacity = self.config.buffer_capacity
@@ -221,10 +246,11 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       hidden_h_pre = experience_state.hidden_state_h[jnp.arange(B), seq_idx]
       hidden_c_pre = experience_state.hidden_state_c[jnp.arange(B), seq_idx]
     else:
-      hidden_h_pre, hidden_c_pre = self._init_lstm_hidden(B, nets.online.lstm_cell)
+      hidden_h_pre, hidden_c_pre = self._init_lstm_hidden(B, nets.online)
 
-    assert hidden_h_pre.shape == (B, nets.online.lstm_cell.hidden_size)
-    assert hidden_c_pre.shape == (B, nets.online.lstm_cell.hidden_size)
+    if nets.online.lstm_cell is not None:
+      assert hidden_h_pre.shape == (B, nets.online.lstm_cell.hidden_size)
+      assert hidden_c_pre.shape == (B, nets.online.lstm_cell.hidden_size)
     assert isinstance(self.env_info.observation_space, gymnax_spaces.Box)
     assert obs_time.shape == (seq_length, B, *self.env_info.observation_space.shape)
     assert action_time.shape == (seq_length, B)
@@ -303,11 +329,11 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       jax.debug.print("Target Q-values mean: {}", jnp.mean(target_q))
       jax.debug.print("Q-value difference: {}", jnp.mean(online_q[..., 1] - online_q[..., 0]))
       jax.debug.print("Q-values variance: {}", jnp.var(online_q))
-      # jax.debug.print("dones_time sum: {}", jnp.sum(dones_time))
-    # jax.debug.print("mask_time min: {}, max: {}", jnp.min(mask_time), jnp.max(mask_time))
-    # jax.debug.print(
-    #   "discount_time min: {}, max: {}", jnp.min(discount_time), jnp.max(discount_time)
-    # )
+      jax.debug.print("dones_time sum: {}", jnp.sum(dones_time))
+      jax.debug.print("mask_time min: {}, max: {}", jnp.min(mask_time), jnp.max(mask_time))
+      jax.debug.print(
+        "discount_time min: {}, max: {}", jnp.min(discount_time), jnp.max(discount_time)
+      )
 
     tx_pair = IDENTITY_PAIR
     if self.config.value_rescaling_epsilon > 0:
@@ -330,13 +356,14 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     )
     batch_loss = 0.5 * jnp.square(batch_td_error).sum(axis=0)
     # Debug TD errors
-    # jax.debug.print(
-    #   "TD error mean: {}, min: {}, max: {}",
-    #   jnp.mean(batch_td_error),
-    #   jnp.min(batch_td_error),
-    #   jnp.max(batch_td_error),
-    # )
-    # jax.debug.print("Batch loss mean: {}", jnp.mean(batch_loss))
+    if self.config.debug:
+      jax.debug.print(
+        "TD error mean: {}, min: {}, max: {}",
+        jnp.mean(batch_td_error),
+        jnp.min(batch_td_error),
+        jnp.max(batch_td_error),
+      )
+      jax.debug.print("Batch loss mean: {}", jnp.mean(batch_loss))
 
     # TODO: Add importance sampling to the experience state.
     mean_loss = jnp.mean(batch_loss)
@@ -380,9 +407,6 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       experience_state.pointer,
       trajectory.new_episode,
     )
-    # jax.debug.print("pointer: {}", experience_state.pointer)
-    # jax.debug.print("trajectory.new_episode: {}", trajectory.new_episode)
-    # jax.debug.print("new_dones: {}", new_dones)
 
     def update_hidden(hidden_buffer, pointer, init_hidden):
       seq_index = pointer // seq_length
@@ -416,7 +440,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     )
 
   def num_off_policy_optims_per_cycle(self) -> int:
-    return 1
+    return self.config.num_off_policy_optims_per_cycle
 
   def update_target(self, nets: R2D2Networks) -> R2D2Networks:
     return R2D2Networks(online=nets.online, target=nets.online)
@@ -435,15 +459,30 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     updates, optax_state = self.config.optimizer.update(nets_grads.online, opt_state.optax_state)
     new_online = eqx.apply_updates(nets.online, updates)
 
+    # Soft update target network with a smaller step size
+    # This increases stability compared to hard/periodic updates
     target_arrays, target_other = eqx.partition(nets.target, eqx.is_array)
-    target_arrays = optax.periodic_update(
-      eqx.partition(new_online, eqx.is_array)[0],
-      target_arrays,
-      opt_state.optimize_count,
-      self.config.target_update_period,
-    )
+    online_arrays, _ = eqx.partition(new_online, eqx.is_array)
+
+    if self.config.target_update_step_size > 0:
+      # Soft update with a smaller tau value (e.g., 0.005)
+      tau = self.config.target_update_step_size
+      # Apply soft update: target = (1 - tau) * target + tau * online
+      target_arrays = jax.tree.map(
+        lambda target, online: (1 - tau) * target + tau * online, target_arrays, online_arrays
+      )
+    else:
+      assert self.config.target_update_period
+      target_arrays = optax.periodic_update(
+        online_arrays,
+        target_arrays,
+        opt_state.optimize_count,
+        self.config.target_update_period,
+      )
+
     assert isinstance(target_arrays, R2D2Network)
     new_nets = R2D2Networks(online=new_online, target=eqx.combine(target_arrays, target_other))
+
     new_opt_state = R2D2OptState(
       optax_state=optax_state,
       optimize_count=opt_state.optimize_count + 1,
