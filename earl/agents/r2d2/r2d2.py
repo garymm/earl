@@ -307,6 +307,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       )
       # Debug after burn-in
       # jax.debug.print("Dones after burn-in: {}", dones_time)
+      # TODO: probably need to stop grad?
 
     _, (online_q, _) = jax.lax.scan(
       scan_online_fn, online_hidden, (obs_time, action_time, reward_time)
