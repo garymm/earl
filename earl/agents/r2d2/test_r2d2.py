@@ -9,8 +9,7 @@ import numpy as np
 import pytest
 from gymnax.environments.classic_control import CartPole
 from gymnax.environments.spaces import Box, Discrete
-from jax_loop_utils.metric_writers import MemoryWriter, MultiWriter
-from jax_loop_utils.metric_writers.mlflow import MlflowMetricWriter
+from jax_loop_utils.metric_writers import MemoryWriter
 
 import earl.agents.r2d2.networks as r2d2_networks
 from earl.agents.r2d2.r2d2 import R2D2, R2D2Config
@@ -51,46 +50,9 @@ def test_r2d2_accepts_atari_input():
   assert hiddens[1].shape == (hidden_size,)
 
 
-# def test_r2d2_atari_training():
-#   env = gymnasium.make("PongNoFrameskip-v4")
-#   env = gymnasium.wrappers.AtariPreprocessing(env, noop_max=0)
-#   stack_size = 4
-#   env = gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
-#   assert isinstance(env.action_space, gymnasium.spaces.Discrete)
-#   num_actions = int(env.action_space.n)
-#   hidden_size = 512
-#   key = jax.random.PRNGKey(0)
-#   networks_key, loop_key, agent_key = jax.random.split(key, 3)
-#   networks = r2d2_networks.make_networks_resnet(
-#     num_actions=num_actions,
-#     in_channels=stack_size,
-#     dtype=jnp.float32,
-#     hidden_size=hidden_size,
-#     key=networks_key,
-#   )
-#   num_envs = 2
-#   steps_per_cycle = 10
-#   env_info = env_info_from_gymnasium(env, num_envs)
-#   config = R2D2Config(
-#     num_envs_per_learner=num_envs,
-#     replay_seq_length=steps_per_cycle,
-#     burn_in=2,
-#   )
-#   agent = R2D2(env_info, config)
-#   agent_state = agent.new_state(networks, agent_key)
-#   num_cycles = 2
-#   metric_writer = MemoryWriter()
-#   loop = GymnasiumLoop(
-#     env, agent, num_envs, loop_key, metric_writer=metric_writer, vectorization_mode="sync"
-#   )
-
-#   _ = loop.run(agent_state, num_cycles, steps_per_cycle)
-#   del agent_state
-#   metrics = metric_writer.scalars
-#   print(len(metrics))
-
-
-def test_r2d2_learns_cartpole():
+def test_learns_cartpole():
+  # NOTE: this test is pretty fragile. I had to search for good hyperparameters to get it to learn.
+  # I think if it were run for many more cycles it would learn, but that's not appropriate for CI.
   env = CartPole()
   env_params = env.default_params
   action_space = env.action_space(env_params)
@@ -107,23 +69,23 @@ def test_r2d2_learns_cartpole():
     input_size=int(math.prod(observation_space.shape)),
     dtype=jnp.float32,
     hidden_size=hidden_size,
-    use_lstm=False,
+    use_lstm=True,
     key=networks_key,
   )
+
   num_envs = 512
-  burn_in = 0
+  burn_in = 10
   steps_per_cycle = 80 + burn_in
-  num_cycles = 2000
+  num_cycles = 1000
   env_info = env_info_from_gymnax(env, env_params, num_envs)
   num_off_policy_optims_per_cycle = 1
   config = R2D2Config(
     epsilon_greedy_schedule_args=dict(
-      init_value=0.5, end_value=0.05, transition_steps=steps_per_cycle * num_cycles
+      init_value=0.5, end_value=0.01, transition_steps=steps_per_cycle * num_cycles
     ),
     q_learning_n_steps=2,
     debug=False,
     buffer_capacity=steps_per_cycle * 10,
-    # target_update_period=400,
     num_envs_per_learner=num_envs,
     replay_seq_length=steps_per_cycle,
     burn_in=burn_in,
@@ -139,9 +101,12 @@ def test_r2d2_learns_cartpole():
   )
   agent = R2D2(env_info, config)
   memory_writer = MemoryWriter()
-  metric_writer = MultiWriter(
-    (memory_writer, MlflowMetricWriter(experiment_name=env.name)),
-  )
+  # For tweaking of hyperparameters, you can use the mlflow writer
+  # and view metrics with `uv run --with mlflow mlflow server`
+  # metric_writer = MultiWriter(
+  #   (memory_writer, MlflowMetricWriter(experiment_name=env.name)),
+  # )
+  metric_writer = memory_writer
   config_dict = _config_to_dict(config)
   metric_writer.write_hparams(config_dict)
   loop = GymnaxLoop(env, env.default_params, agent, num_envs, loop_key, metric_writer=metric_writer)
