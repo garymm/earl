@@ -1,12 +1,10 @@
 import functools
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import chex
-import equinox as eqx
 import jax
 import jax.numpy as jnp
-import optax
 
 Array = jax.Array
 
@@ -214,15 +212,6 @@ def transformed_n_step_q_learning(
 
 
 # END copied from rlax
-
-
-def filter_incremental_update(new_tensors: Any, old_tensors: Any, step_size: float) -> Any:
-  """Wrapper on top of optax.incremental_update that supports pytrees with non-array leaves."""
-  new_tensors, _ = eqx.partition(new_tensors, eqx.is_array)
-  old_tensors, static = eqx.partition(old_tensors, eqx.is_array)
-
-  updated = optax.incremental_update(new_tensors, old_tensors, step_size)
-  return eqx.combine(updated, static)
 
 
 def update_buffer_batch(buffer, pointer, data, debug=False):
