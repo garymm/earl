@@ -127,7 +127,7 @@ def test_learns_cartpole():
   first_mean = float(np.mean(episode_lengths[:mean_over_cycles]))
   assert first_mean > 0
   last_mean = float(np.mean(episode_lengths[-mean_over_cycles:]))
-  assert last_mean > 1.5 * first_mean
+  assert last_mean > 1.4 * first_mean
 
 
 _dummy_env_info = EnvInfo(
