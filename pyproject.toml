@@ -5,7 +5,7 @@ dependencies = [
     "equinox>=0.11.11",
     "gymnax",
     "gymnasium>=1.0.0",
-    "jax_loop_utils",
+    "jax-loop-utils>=0.0.13",
     "jax>=0.4.0",
     "jaxtyping>=0.2.0",
     "orbax-checkpoint==0.11.1",
@@ -35,8 +35,8 @@ agent-r2d2 = [
     "gymnasium[other]>=1.0.0",
     "chex>=0.1.88",
     "distrax>=0.1.5",
-    "jax_loop_utils[audio-video]",
-    "jax_loop_utils[mlflow]",      # TODO: remove, use tensorboard writer
+    "jax-loop-utils[audio-video]",
+    "jax-loop-utils[mlflow]",      # TODO: remove, use tensorboard writer
     "optax>=0.2.4",
 ]
 cuda = ["jax[cuda12]>=0.4.0", "nvtx>=0.2.10"]
@@ -96,7 +96,6 @@ environments = [
 [tool.uv.sources]
 draccus = { git = "https://github.com/dlwh/draccus", rev = "9b690730ca108930519f48cc5dead72a72fd27cb" }
 gymnax = { git = "https://github.com/Astera-org/gymnax", rev = "c52a7dac7b41514297d2e98b1b288d56715a5165" }
-jax_loop_utils = { git = "https://github.com/Astera-org/jax_loop_utils", rev = "5cd50bfa0a6e42ccc7438fb556d80e1ec3074932" }
 
 [tool.basedpyright]
 include = ["earl"]
