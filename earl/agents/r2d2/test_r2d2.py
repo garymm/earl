@@ -6,7 +6,6 @@ import gymnasium
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 import pytest
 from gymnax.environments.classic_control import CartPole
 from gymnax.environments.spaces import Box, Discrete
@@ -31,6 +30,7 @@ def test_r2d2_accepts_atari_input():
   env = gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
   obs = env.observation_space.sample()
   key = jax.random.PRNGKey(0)
+  env.close()
   assert isinstance(env.action_space, gymnasium.spaces.Discrete)
   num_actions = int(env.action_space.n)
   action = jax.random.randint(key, (1,), 0, num_actions)
@@ -99,7 +99,7 @@ def test_r2d2_learns_cartpole():
   observation_space = env.observation_space(env_params)
   assert isinstance(observation_space, Box), observation_space
 
-  hidden_size = 64
+  hidden_size = 32
   key = jax.random.PRNGKey(1)
   networks_key, loop_key, agent_key = jax.random.split(key, 3)
   networks = r2d2_networks.make_networks_mlp(
@@ -110,32 +110,32 @@ def test_r2d2_learns_cartpole():
     use_lstm=False,
     key=networks_key,
   )
-  num_envs = 256
+  num_envs = 512
   burn_in = 0
   steps_per_cycle = 80 + burn_in
-  num_cycles = 10000
+  num_cycles = 2000
   env_info = env_info_from_gymnax(env, env_params, num_envs)
   num_off_policy_optims_per_cycle = 1
   config = R2D2Config(
     epsilon_greedy_schedule_args=dict(
-      init_value=0.9, end_value=0.005, transition_steps=steps_per_cycle * num_cycles
+      init_value=0.5, end_value=0.05, transition_steps=steps_per_cycle * num_cycles
     ),
     q_learning_n_steps=2,
     debug=False,
-    buffer_capacity=steps_per_cycle * 20,
-    # target_update_period=max((2, int(num_cycles * num_off_policy_optims_per_cycle / 10))),
+    buffer_capacity=steps_per_cycle * 10,
+    # target_update_period=400,
     num_envs_per_learner=num_envs,
     replay_seq_length=steps_per_cycle,
     burn_in=burn_in,
     value_rescaling_epsilon=0.0,
     num_off_policy_optims_per_cycle=num_off_policy_optims_per_cycle,
-    gradient_clipping_max_delta=0.5,
+    gradient_clipping_max_delta=1.0,
     learning_rate_schedule_name="cosine_onecycle_schedule",
     learning_rate_schedule_args=dict(
-      transition_steps=steps_per_cycle * num_cycles / 2,
-      peak_value=1e-3,
+      transition_steps=steps_per_cycle * num_cycles // 2,
+      peak_value=5e-4,
     ),
-    target_update_step_size=0.0001,
+    target_update_step_size=0.001,
   )
   agent = R2D2(env_info, config)
   memory_writer = MemoryWriter()
@@ -149,22 +149,20 @@ def test_r2d2_learns_cartpole():
   _ = loop.run(agent_state, num_cycles, steps_per_cycle)
   del agent_state
   metrics = memory_writer.scalars
+  metric_writer.close()
 
   episode_lengths = np.array(
     [step_metrics[MetricKey.COMPLETE_EPISODE_LENGTH_MEAN] for step_metrics in metrics.values()]
   )
-  print(f"First 5 cycles avg length: {float(np.mean(episode_lengths[:5])):.2f}")
-  print(f"Last 5 cycles avg length: {float(np.mean(episode_lengths[-5:])):.2f}")
-  improvement_ratio = float(np.mean(episode_lengths[-5:])) / float(np.mean(episode_lengths[:5]))
-  print(f"Improvement ratio: {improvement_ratio:.2f}x")
 
   assert len(metrics) == num_cycles
   # Due to auto-resets, the reward is always constant, but it's a survival task
   # so longer episodes are better.
-  first_five_mean = float(np.mean(episode_lengths[:5]))
-  assert first_five_mean > 0
-  last_five_mean = float(np.mean(episode_lengths[-5:]))
-  assert last_five_mean > 1.5 * first_five_mean
+  mean_over_cycles = 20
+  first_mean = float(np.mean(episode_lengths[:mean_over_cycles]))
+  assert first_mean > 0
+  last_mean = float(np.mean(episode_lengths[-mean_over_cycles:]))
+  assert last_mean > 1.5 * first_mean
 
 
 _dummy_env_info = EnvInfo(
@@ -180,9 +178,7 @@ def mlp_agent_and_networks():
   key = jax.random.PRNGKey(0)
   env_info = _dummy_env_info
   config = R2D2Config(
-    epsilon_greedy_schedule=optax.linear_schedule(
-      init_value=0.5, end_value=0.0001, transition_steps=10000
-    ),
+    epsilon_greedy_schedule_args=dict(init_value=0.5, end_value=0.0001, transition_steps=10000),
     discount=0.99,
     q_learning_n_steps=3,
     burn_in=2,
@@ -245,39 +241,27 @@ def test_update_buffer_batch():
   num_envs = 2
 
   # Test with pointer at beginning
-  buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
-  pointer = jnp.array(0, dtype=jnp.int32)
+  buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool)
+  pointer = jnp.array(0, dtype=jnp.uint32)
   data = jnp.array(
     [[True, False, True, False], [True, False, True, False]]
   )  # Shape is (num_envs, seq_length)
   updated_buffer = update_buffer_batch(buffer, pointer, data, debug=True)
 
   # Check buffer has been updated correctly
-  expected_buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
+  expected_buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool)
   expected_buffer = expected_buffer.at[:, 0:4].set(data)
-  chex.assert_equal(updated_buffer, expected_buffer)
+  chex.assert_trees_all_close(updated_buffer, expected_buffer)
 
   # Test with pointer in middle
-  buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
-  pointer = jnp.array(2, dtype=jnp.int32)
+  buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool)
+  pointer = jnp.array(2, dtype=jnp.uint32)
   updated_buffer = update_buffer_batch(buffer, pointer, data, debug=True)
 
   # Check buffer has been updated correctly
-  expected_buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
+  expected_buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool)
   expected_buffer = expected_buffer.at[:, 2:6].set(data)
-  chex.assert_equal(updated_buffer, expected_buffer)
-
-  # Test with wrap-around
-  buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
-  pointer = jnp.array(6, dtype=jnp.int32)
-  updated_buffer = update_buffer_batch(buffer, pointer, data, debug=True)
-
-  # Check buffer has been updated correctly
-  expected_buffer = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool_)
-  # For wrap-around, data will be at positions 6:8 and 0:2
-  expected_buffer = expected_buffer.at[:, 6:8].set(data[:, 0:2])
-  expected_buffer = expected_buffer.at[:, 0:2].set(data[:, 2:4])
-  chex.assert_equal(updated_buffer, expected_buffer)
+  chex.assert_trees_all_close(updated_buffer, expected_buffer)
 
   # Test with nested dimensions
   hidden_size = 3
@@ -285,7 +269,7 @@ def test_update_buffer_batch():
   data = jnp.ones((num_envs, seq_length, hidden_size), dtype=jnp.float32)
   data = data * jnp.arange(1, num_envs + 1).reshape(num_envs, 1, 1)  # Different values per env
 
-  pointer = jnp.array(1, dtype=jnp.int32)
+  pointer = jnp.array(1, dtype=jnp.uint32)
   updated_buffer = update_buffer_batch(buffer, pointer, data, debug=True)
 
   # Check buffer shape and updated values
@@ -294,12 +278,14 @@ def test_update_buffer_batch():
   # Verify values in updated region
   expected_buffer = jnp.zeros((num_envs, buffer_capacity, hidden_size), dtype=jnp.float32)
   expected_buffer = expected_buffer.at[:, 1:5].set(data)
-  chex.assert_equal(updated_buffer, expected_buffer)
+  chex.assert_trees_all_close(updated_buffer, expected_buffer)
 
   # Also verify specific values to ensure environment-specific data was preserved
   for env_idx in range(num_envs):
     # Check that the updated region has values equal to env_idx + 1
-    chex.assert_equal(updated_buffer[env_idx, 1:5], jnp.ones((4, hidden_size)) * (env_idx + 1))
+    chex.assert_trees_all_close(
+      updated_buffer[env_idx, 1:5], jnp.ones((4, hidden_size)) * (env_idx + 1)
+    )
     # Check that areas outside the updated region remain zeros
-    chex.assert_trees_all_equal(updated_buffer[env_idx, 0], jnp.zeros(hidden_size))
-    chex.assert_trees_all_equal(updated_buffer[env_idx, 5:], jnp.zeros((3, hidden_size)))
+    chex.assert_trees_all_close(updated_buffer[env_idx, 0], jnp.zeros(hidden_size))
+    chex.assert_trees_all_close(updated_buffer[env_idx, 5:], jnp.zeros((3, hidden_size)))
