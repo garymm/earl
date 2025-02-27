@@ -466,11 +466,8 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     online_arrays, _ = eqx.partition(new_online, eqx.is_array)
 
     if self.config.target_update_step_size > 0:
-      # Soft update with a smaller tau value (e.g., 0.005)
-      tau = self.config.target_update_step_size
-      # Apply soft update: target = (1 - tau) * target + tau * online
-      target_arrays = jax.tree.map(
-        lambda target, online: (1 - tau) * target + tau * online, target_arrays, online_arrays
+      target_arrays = optax.incremental_update(
+        online_arrays, target_arrays, self.config.target_update_step_size
       )
     else:
       assert self.config.target_update_period
