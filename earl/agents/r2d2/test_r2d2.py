@@ -147,7 +147,7 @@ def mlp_agent_and_networks():
     discount=0.99,
     q_learning_n_steps=3,
     burn_in=2,
-    priority_exponent=0.9,
+    importance_sampling_priority_exponent=0.9,
     target_update_period=10,
     buffer_capacity=8,  # must be divisible by replay_seq_length
     replay_seq_length=4,

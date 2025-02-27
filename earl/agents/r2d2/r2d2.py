@@ -41,14 +41,15 @@ class R2D2ActorState(eqx.Module):
 # R2D2 Experience state holds a replay buffer of fixed-length sequences.
 # We store one hidden state per sequence.
 class R2D2ExperienceState(eqx.Module):
-  observation: jax.Array  # shape: (num_sequences, seq_length, *obs_shape)
-  action: jax.Array  # shape: (num_sequences, seq_length)
-  reward: jax.Array  # shape: (num_sequences, seq_length)
-  new_episode: jax.Array  # shape: (num_sequences, seq_length); True indicates episode end
+  observation: jax.Array  # shape: (num_envs, num_sequences, seq_length, *obs_shape)
+  action: jax.Array  # shape: (num_envs, num_sequences, seq_length)
+  reward: jax.Array  # shape: (num_envs, num_sequences, seq_length)
+  new_episode: jax.Array  # shape: (num_envs, num_sequences, seq_length); True indicates episode end
   pointer: jax.Array  # scalar int, current insertion index in the sequence buffer
   size: jax.Array  # scalar int, current number of stored sequences
-  hidden_state_h: jax.Array  # shape: (num_sequences, hidden_size) if store_hidden_states is true
-  hidden_state_c: jax.Array  # shape: (num_sequences, hidden_size) if store_hidden_states is true
+  priority: jax.Array  # shape: (num_envs, num_sequences)
+  hidden_state_h: jax.Array  # shape: (num_envs, num_sequences, hidden_size) if store_hidden_states
+  hidden_state_c: jax.Array  # shape: (num_envs, num_sequences, hidden_size) if store_hidden_states
 
 
 # Configuration for R2D2 agent.
@@ -56,10 +57,9 @@ class R2D2ExperienceState(eqx.Module):
 class R2D2Config:
   epsilon_greedy_schedule_args: dict[str, Any] = dataclasses.field(default_factory=dict)
   debug: bool = False
-  discount: float = 0.997  # Section 2.3: discount factor.
+  discount: float = 0.997  # Section 2.3: discount factor. γ
   q_learning_n_steps: int = 5  # Section 2.3: n-step return.
   burn_in: int = 40  # Section 3: burn-in length for LSTMCell.
-  priority_exponent: float = 0.9  # Section 2.3: priority exponent.
   target_update_period: int = 2500  # Section 2.3: period to update target network.
   buffer_capacity: int = 10000  # Total number of time steps in replay.
   replay_seq_length: int = 80  # sequence length (m).
@@ -67,10 +67,12 @@ class R2D2Config:
   num_optims_per_target_update: int = 1  # how frequently to update the target network.
   target_update_step_size: float = 0.001  # how much to update the target network.
   num_envs_per_learner: int = 0
+  """Number of environments per learner. 0 means use env_info.num_envs."""
+  importance_sampling_priority_exponent: float = 0.9  # section 2.3
+  max_priority_weight: float = 0.9  # section 2.3, η
   gradient_clipping_max_delta: float = 1.0
   learning_rate_schedule_name: str = "constant_schedule"
   learning_rate_schedule_args: dict[str, Any] = dataclasses.field(default_factory=dict)
-  """Number of environments per learner. 0 means use env_info.num_envs."""
   value_rescaling_epsilon: float = 1e-3  # Epsilon parameter for h and h⁻¹.
   num_off_policy_optims_per_cycle: int = 10  # Number of off-policy optims per cycle.
 
@@ -147,6 +149,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     new_episode = jnp.zeros((num_envs, buffer_capacity), dtype=jnp.bool)
     pointer = jnp.zeros((), dtype=jnp.uint32)
     size = jnp.zeros((num_envs,), dtype=jnp.uint32)
+    priority = jnp.zeros((num_envs, sequence_capacity), dtype=jnp.float32)
     if self.config.store_hidden_states:
       hidden_state_h = jnp.zeros((num_envs, sequence_capacity, nets.online.lstm_cell.hidden_size))
       hidden_state_c = jnp.zeros((num_envs, sequence_capacity, nets.online.lstm_cell.hidden_size))
@@ -160,6 +163,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       new_episode=new_episode,
       pointer=pointer,
       size=size,
+      priority=priority,
       hidden_state_h=hidden_state_h,
       hidden_state_c=hidden_state_c,
     )
@@ -226,17 +230,10 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     return jnp.swapaxes(slices, 0, 1)
 
   def _sample_from_experience(
-    self, nets: R2D2Networks, experience_state: R2D2ExperienceState, key: PRNGKeyArray
+    self, seq_idx: jax.Array, nets: R2D2Networks, experience_state: R2D2ExperienceState
   ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     seq_length = self.config.replay_seq_length
-    buffer_capacity_sequences = self.config.buffer_capacity // seq_length
     B = self._actor_batch_size()
-    size_sequences = experience_state.size // seq_length
-    # Avoid sampling indices that are beyond the end of the experience buffer.
-    # Will only happen before the buffer is filled once.
-    seq_idx = jnp.minimum(
-      jax.random.randint(key, (B,), 0, buffer_capacity_sequences - 1), size_sequences - 1
-    )
     obs_idx = seq_idx * seq_length
     obs_time = self._slice_for_replay(experience_state.observation, obs_idx, seq_length)
     action_time = self._slice_for_replay(experience_state.action, obs_idx, seq_length)
@@ -269,10 +266,15 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     # Number of sequences (batch size).
     B = experience_state.observation.shape[0]
     assert self._actor_batch_size() == B
-
+    random_idx = jax.random.categorical(opt_state.key, experience_state.priority, axis=1)
+    assert random_idx.shape == (B,)
+    size_sequences = experience_state.size // seq_length
+    # Avoid sampling indices that are beyond the end of the experience buffer.
+    # Will only happen before the buffer is filled once.
+    sampled_seq_idx = jnp.minimum(random_idx, size_sequences - 1)
     # _time means time first, batch last.
     obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre = (
-      self._sample_from_experience(nets, experience_state, opt_state.key)
+      self._sample_from_experience(sampled_seq_idx, nets, experience_state)
     )
 
     # # Debug the sampled experience data
@@ -366,9 +368,24 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       )
       jax.debug.print("Batch loss mean: {}", jnp.mean(batch_loss))
 
-    # TODO: Add importance sampling to the experience state.
+    # Importance weighting.
+    probs = jax.nn.softmax(experience_state.priority, axis=1)[jnp.arange(B), sampled_seq_idx]
+    importance_weights = (1.0 / (probs + 1e-6)).astype(online_q.dtype)
+    importance_weights **= self.config.importance_sampling_priority_exponent
+    importance_weights /= jnp.max(importance_weights)
+    mean_loss = jnp.mean(importance_weights * batch_loss)
+
+    # Calculate priorities as a mixture of max and mean sequence errors.
+    abs_td_error = jnp.abs(batch_td_error).astype(online_q.dtype)
+    max_priority = self.config.max_priority_weight * jnp.max(abs_td_error, axis=0)
+    mean_priority = (1 - self.config.max_priority_weight) * jnp.mean(abs_td_error, axis=0)
+    priorities = max_priority + mean_priority
+    new_priority = experience_state.priority.at[jnp.arange(B), sampled_seq_idx].set(priorities)
+
+    new_experience_state = dataclasses.replace(experience_state, priority=new_priority)
+
     mean_loss = jnp.mean(batch_loss)
-    return mean_loss, experience_state
+    return mean_loss, new_experience_state
 
   def _update_experience(
     self,
@@ -436,6 +453,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       new_episode=new_dones,
       pointer=new_ptr,
       size=new_size,
+      priority=experience_state.priority,
       hidden_state_h=new_hidden_h,
       hidden_state_c=new_hidden_c,
     )
