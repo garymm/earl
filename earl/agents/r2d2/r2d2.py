@@ -94,7 +94,7 @@ class R2D2Config:
       **self.learning_rate_schedule_args
     )
     return optax.chain(
-      optax.clip(self.gradient_clipping_max_delta), optax.adam(learning_rate_schedule)
+      optax.clip(self.gradient_clipping_max_delta), optax.adam(learning_rate_schedule, eps=1e-3)
     )
 
 
