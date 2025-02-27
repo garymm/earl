@@ -182,9 +182,9 @@ def test_sample_from_experience(mlp_agent_and_networks):
   agent, networks = mlp_agent_and_networks
   key = jax.random.PRNGKey(0)
   exp_state = agent._new_experience_state(networks, key)
-  outputs = agent._sample_from_experience(networks, exp_state, key)
+  seq_idx = jnp.zeros(agent.env_info.num_envs, dtype=jnp.uint32)
+  outputs = agent._sample_from_experience(seq_idx, networks, exp_state)
   obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre = outputs
-  # obs_time shape should be (replay_seq_length, num_envs, observation_dim)
   assert obs_time.shape == (
     agent.config.replay_seq_length,
     agent.env_info.num_envs,
