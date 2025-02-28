@@ -69,8 +69,6 @@ filterwarnings = [
     # action:message:category:module:line
     "error",
     "ignore:jax.interpreters.xla.pytype_aval_mappings is deprecated.:DeprecationWarning",
-    # https://github.com/mlflow/mlflow/issues/12654
-    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
 ]
 
 [tool.ruff]
