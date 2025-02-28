@@ -296,7 +296,6 @@ class R2D2Network(eqx.Module):
     value = self.dueling_value(h)
     advantage = self.dueling_advantage(h)
     q_values = value + (advantage - jnp.mean(advantage, axis=-1, keepdims=True))
-    # q_values = advantage
     return q_values, (h, c)
 
 
