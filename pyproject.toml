@@ -35,9 +35,10 @@ agent-r2d2 = [
     "gymnasium[other]>=1.0.0",
     "chex>=0.1.88",
     "distrax>=0.1.5",
-    "jax-loop-utils[audio-video]",
-    "jax-loop-utils[mlflow]",      # TODO: remove, use tensorboard writer
+    "jax-loop-utils[audio-video]>=0.0.14",
     "optax>=0.2.4",
+    "tensorboard>=2.15.0",
+    "torch>=2.0.0",
 ]
 cuda = ["jax[cuda12]>=0.4.0", "nvtx>=0.2.10"]
 jupyter = ["ipykernel>=6.0.0"]
@@ -93,7 +94,14 @@ environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version>='3.12'",
 ]
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
+# we only need torch for the tensorboard writer
+torch = { index = "pytorch-cpu" }
 draccus = { git = "https://github.com/dlwh/draccus", rev = "9b690730ca108930519f48cc5dead72a72fd27cb" }
 gymnax = { git = "https://github.com/Astera-org/gymnax", rev = "c52a7dac7b41514297d2e98b1b288d56715a5165" }
 
