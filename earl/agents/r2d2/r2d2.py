@@ -1,4 +1,5 @@
 import dataclasses
+import enum
 import functools
 from collections.abc import Sequence
 from typing import Any
@@ -24,7 +25,11 @@ from earl.core import ActionAndState, Agent, AgentState, EnvStep
 from earl.utils.sharding import shard_along_axis_0
 
 
-# ------------------------------------------------------------------
+class ExplorationType(enum.Enum):
+  RANDOM = enum.auto()
+  STICKY = enum.auto()
+
+
 class R2D2OptState(eqx.Module):
   optax_state: optax.OptState
   optimize_count: jax.Array  # scalar; counts steps since last target network update
@@ -75,6 +80,7 @@ class R2D2Config:
   learning_rate_schedule_args: dict[str, Any] = dataclasses.field(default_factory=dict)
   value_rescaling_epsilon: float = 1e-3  # Epsilon parameter for h and h⁻¹.
   num_off_policy_optims_per_cycle: int = 10  # Number of off-policy optims per cycle.
+  exploration_type: ExplorationType = ExplorationType.RANDOM
 
   def __post_init__(self):
     if self.buffer_capacity % self.replay_seq_length:
@@ -186,10 +192,19 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     )
     key = jax.random.split(actor_state.key, 2)[1]
     epsilon = self.config.epsilon_greedy_schedule(actor_state.num_steps)
-    action = distrax.EpsilonGreedy(
-      q_values,
-      epsilon,  # pyright: ignore[reportArgumentType]
-    ).sample(seed=key)
+    if self.config.exploration_type == ExplorationType.RANDOM:
+      action = distrax.EpsilonGreedy(
+        q_values,
+        epsilon,  # pyright: ignore[reportArgumentType]
+      ).sample(seed=key)
+    elif self.config.exploration_type == ExplorationType.STICKY:
+      greedy_action = jnp.argmax(q_values, axis=-1)
+      sticky_action = env_step.prev_action
+      action = jnp.where(
+        jax.random.uniform(key, shape=(env_step.reward.shape[0],)) < epsilon,
+        greedy_action,
+        sticky_action,
+      )
     new_actor_state = R2D2ActorState(lstm_h_c=new_h_c, key=key, num_steps=actor_state.num_steps + 1)
     if self.config.debug:
       jax.debug.print("Q-values before action: {}", q_values)
