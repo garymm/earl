@@ -49,7 +49,7 @@ test = ["coverage>=7.0.0", "pytest>=8.0.0", "pytest-repeat==0.9.3"]
 Homepage = "http://github.com/garymm/earl"
 
 [dependency-groups]
-dev = ["basedpyright==1.26.0", "ruff>=0.9.1"]
+dev = ["basedpyright==1.28.0", "ruff>=0.9.1"]
 
 [build-system]
 requires = ["hatchling"]
