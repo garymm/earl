@@ -1,11 +1,13 @@
 import functools
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 
+from earl.core import EnvStep, Metrics, Video
 Array = jax.Array
 
 
@@ -244,3 +246,77 @@ def update_buffer_batch(buffer, pointer, data, debug=False):
     jax.debug.print("start_indices: {}", start_indices)
 
   return jax.lax.dynamic_update_slice(buffer, data, start_indices)
+
+def render_minatar(obs: Array) -> np.ndarray:
+  n_channels = obs.shape[-1]
+  numerical_state = np.amax(obs * np.reshape(np.arange(n_channels) + 1, (1, 1, -1)), 2) + 0.5
+
+  # Create a simple color map (similar to cubehelix)
+  # Add black as the first color (for value 0)
+  colors = np.zeros((n_channels + 1, 3))
+
+  # Generate colors for each channel (1 to n_channels)
+  for i in range(1, n_channels + 1):
+    # Create colors with increasing intensity and some variation
+    # This is a simplified version of cubehelix - adjust as needed
+    hue = (i / n_channels) * 0.8 + 0.1  # Hue varies from 0.1 to 0.9
+    saturation = 0.7
+    value = 0.5 + i / (2 * n_channels)  # Value increases with channel index
+
+    # Simple HSV to RGB conversion
+    h = hue * 6
+    c = value * saturation
+    x = c * (1 - abs(h % 2 - 1))
+    m = value - c
+
+    if h < 1:
+      r, g, b = c, x, 0
+    elif h < 2:
+      r, g, b = x, c, 0
+    elif h < 3:
+      r, g, b = 0, c, x
+    elif h < 4:
+      r, g, b = 0, x, c
+    elif h < 5:
+      r, g, b = x, 0, c
+    else:
+      r, g, b = c, 0, x
+
+    colors[i] = np.array([r + m, g + m, b + m])
+
+  # Vectorized mapping of numerical_state to RGB colors
+  # Convert numerical_state to integer indices and clip to valid range
+  indices = np.clip(numerical_state.astype(np.int32), 0, n_channels).reshape(-1)
+
+  # Use the indices to look up colors
+  rgb_values = colors[indices]
+
+  # Reshape back to image dimensions with RGB channels
+  rgb_image = rgb_values.reshape(numerical_state.shape + (3,))
+
+  # Convert from float (0-1) to uint8 (0-255) for PIL compatibility
+  rgb_image_uint8 = (rgb_image * 255).astype(np.uint8)
+
+  # Resize to 64x64 using nearest neighbor interpolation
+  height, width = rgb_image_uint8.shape[:2]
+  scale_h = 64 // height
+  scale_w = 64 // width
+
+  # Use numpy's repeat for simple nearest-neighbor upscaling
+  # First, repeat rows
+  upscaled = np.repeat(rgb_image_uint8, scale_h, axis=0)
+  # Then, repeat columns
+  upscaled = np.repeat(upscaled, scale_w, axis=1)
+
+  return upscaled
+
+def render_minatar_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
+  obs = trajectory.obs
+  if len(obs.shape) != 5:
+    raise ValueError(
+      f"Expected trajectory.obs to have shape (B, T, H, W, C),got {obs.shape}"
+    )
+  obs = obs[0]
+  img_array = np.stack([render_minatar(obs[i]) for i in range(obs.shape[0])])
+
+  return {"video": Video(img_array)} # pyright: ignore
