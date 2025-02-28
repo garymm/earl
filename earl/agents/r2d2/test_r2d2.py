@@ -95,9 +95,10 @@ def test_learns_cartpole():
     learning_rate_schedule_name="cosine_onecycle_schedule",
     learning_rate_schedule_args=dict(
       transition_steps=steps_per_cycle * num_cycles // 2,
-      peak_value=5e-4,
+      peak_value=2e-4,
     ),
-    target_update_step_size=0.001,
+    target_update_step_size=0.00,
+    target_update_period=100,
   )
   agent = R2D2(env_info, config)
   memory_writer = MemoryWriter()
