@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from earl.core import EnvStep, Metrics, Video
+
 Array = jax.Array
 
 
@@ -247,6 +248,7 @@ def update_buffer_batch(buffer, pointer, data, debug=False):
 
   return jax.lax.dynamic_update_slice(buffer, data, start_indices)
 
+
 def render_minatar(obs: Array) -> np.ndarray:
   n_channels = obs.shape[-1]
   numerical_state = np.amax(obs * np.reshape(np.arange(n_channels) + 1, (1, 1, -1)), 2) + 0.5
@@ -310,13 +312,24 @@ def render_minatar(obs: Array) -> np.ndarray:
 
   return upscaled
 
+
 def render_minatar_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
   obs = trajectory.obs
   if len(obs.shape) != 5:
-    raise ValueError(
-      f"Expected trajectory.obs to have shape (B, T, H, W, C),got {obs.shape}"
-    )
+    raise ValueError(f"Expected trajectory.obs to have shape (B, T, H, W, C),got {obs.shape}")
   obs = obs[0]
   img_array = np.stack([render_minatar(obs[i]) for i in range(obs.shape[0])])
 
-  return {"video": Video(img_array)} # pyright: ignore
+  return {"video": Video(img_array)}  # pyright: ignore
+
+
+def render_atari_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
+  obs = trajectory.obs
+  if len(obs.shape) != 5:
+    raise ValueError(
+      f"Expected trajectory.obs to have shape (B, T, stack_size, H, W),got {obs.shape}"
+    )
+  obs = obs[0, :, 0, :, :]  # batch index 0, stack index 0
+  obs = np.expand_dims(obs, axis=3)  # add channel dimension
+
+  return {"video": Video(obs)}  # pyright: ignore
