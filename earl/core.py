@@ -10,6 +10,7 @@ import gymnax.environments.spaces as gymnax_spaces
 import jax
 import jax.numpy as jnp
 from gymnasium.core import Env as GymnasiumEnv
+from gymnasium.vector import VectorEnv
 from gymnax.environments.environment import Environment as GymnaxEnv
 from gymnax.environments.spaces import Space
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
@@ -111,9 +112,15 @@ def env_info_from_gymnax(env: GymnaxEnv, params: Any, num_envs: int) -> EnvInfo:
   return EnvInfo(num_envs, env.observation_space(params), env.action_space(params), env.name)
 
 
-def env_info_from_gymnasium(env: GymnasiumEnv, num_envs: int) -> EnvInfo:
-  observation_space = _convert_gymnasium_space_to_gymnax_space(env.observation_space)
-  action_space = _convert_gymnasium_space_to_gymnax_space(env.action_space)
+def env_info_from_gymnasium(env: GymnasiumEnv | VectorEnv, num_envs: int) -> EnvInfo:
+  if isinstance(env, VectorEnv):
+    env_obs_space = env.single_observation_space
+    env_action_space = env.single_action_space
+  else:
+    env_obs_space = env.observation_space
+    env_action_space = env.action_space
+  observation_space = _convert_gymnasium_space_to_gymnax_space(env_obs_space)
+  action_space = _convert_gymnasium_space_to_gymnax_space(env_action_space)
   return EnvInfo(num_envs, observation_space, action_space, str(env))
 
 
