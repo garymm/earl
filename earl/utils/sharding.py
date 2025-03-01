@@ -35,4 +35,4 @@ def pytree_get_index_0(pytree: typing.Any) -> typing.Any:
   Returns:
     A pytree with the same structure as the input, but with each array replaced with its 0th index.
   """
-  return jax.tree.map(lambda x: x[0] if isinstance(x, jax.Array) else x, pytree)
+  return jax.tree.map(lambda x: x[0] if isinstance(x, jax.Array) and x.ndim else x, pytree)
