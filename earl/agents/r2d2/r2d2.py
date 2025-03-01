@@ -530,4 +530,5 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
         shard_along_axis_0(actor_state.lstm_h_c[1], learner_devices),
       ),
       key=jax.device_put_replicated(actor_state.key, learner_devices),
+      num_steps=jax.device_put_replicated(actor_state.num_steps, learner_devices),
     )
