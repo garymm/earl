@@ -35,6 +35,11 @@ except ImportError:
     yield
 
 
+try:
+  import envpool.python.envpool as envpool
+except ImportError:
+  envpool = None
+
 from earl.core import (
   Agent,
   AgentState,
@@ -128,7 +133,7 @@ class _ActorThread(threading.Thread):
   def __init__(
     self,
     loop: "GymnasiumLoop",
-    env: VectorEnv,
+    env: VectorEnv | GymnasiumEnv,
     actor_state: typing.Any,
     env_step: EnvStep,
     num_steps: int,
@@ -243,6 +248,28 @@ def _jax_platform_cpu():
       os.environ["JAX_PLATFORMS"] = prev_value
 
 
+def _make_vec_env(
+  vectorization_mode: typing.Literal["sync", "async", "none"],
+  env_factory: typing.Callable[[], GymnasiumEnv],
+  num_envs: int,
+) -> GymnasiumEnv | VectorEnv:
+  if vectorization_mode == "none":
+    env = env_factory()
+    if (
+      envpool is not None and isinstance(env, envpool.EnvPoolMixin) and len(env) != num_envs  # pyright: ignore[reportArgumentType]
+    ):
+      raise ValueError("envpool env must have the same number of environments as num_envs")
+    return env
+  if vectorization_mode == "sync":
+    return SyncVectorEnv([lambda: Autoreset(env_factory()) for _ in range(num_envs)])
+  assert vectorization_mode == "async"
+  # context="spawn" because others are unsafe with multithreaded JAX
+  with _jax_platform_cpu():
+    return AsyncVectorEnv(
+      [lambda: Autoreset(env_factory()) for _ in range(num_envs)], context="spawn"
+    )
+
+
 class GymnasiumLoop:
   """Runs an Agent in a Gymnasium environment.
 
@@ -260,7 +287,7 @@ class GymnasiumLoop:
 
   def __init__(
     self,
-    env: GymnasiumEnv,
+    env_factory: typing.Callable[[], GymnasiumEnv],
     agent: Agent,
     num_envs: int,
     key: PRNGKeyArray,
@@ -268,14 +295,14 @@ class GymnasiumLoop:
     observe_cycle: ObserveCycle = no_op_observe_cycle,
     actor_only: bool = False,
     assert_no_recompile: bool = True,
-    vectorization_mode: typing.Literal["sync", "async"] = "async",
+    vectorization_mode: typing.Literal["sync", "async", "none"] = "async",
     actor_devices: typing.Sequence[jax.Device] | None = None,
     learner_devices: typing.Sequence[jax.Device] | None = None,
   ):
     """Initializes the GymnasiumLoop.
 
     Args:
-        env: The environment.
+        env_factory: A function that returns a GymnasiumEnv.
         agent: The agent.
         num_envs: The number of environments to run in parallel per actor.
           Note there will be 2 actor threads per actor device, so the total number of
@@ -288,7 +315,8 @@ class GymnasiumLoop:
         actor_only: If True, agent.optimize_from_grads() will not be called.
         assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         vectorization_mode: Whether to create a synchronous or asynchronous vectorized environment
-            from the provided Gymnasium environment.
+            from the provided Gymnasium environment. If "none", the env_factory must return a
+            a vectorized environment with num_envs.
         actor_devices: The devices to use for acting. If None, uses jax.local_devices()[0].
         learner_devices: The devices to use for learning. If None, uses jax.local_devices()[0].
     """
@@ -304,26 +332,14 @@ class GymnasiumLoop:
     self._networks_for_actor_lock = threading.Lock()
     self._actor_threads: list[_ActorThread] = []
 
-    env = Autoreset(env)  # run() assumes autoreset.
-
-    def _env_factory() -> GymnasiumEnv:
-      return copy.deepcopy(env)
-
-    self._env_for_actor_thread: list[VectorEnv] = []
+    self._env_for_actor_thread: list[GymnasiumEnv | VectorEnv] = []
     for _ in range(self._NUM_ACTOR_THREADS * len(self._actor_devices)):
-      if vectorization_mode == "sync":
-        self._env_for_actor_thread.append(SyncVectorEnv([_env_factory for _ in range(num_envs)]))
-      else:
-        assert vectorization_mode == "async"
-        # context="spawn" because others are unsafe with multithreaded JAX
-        with _jax_platform_cpu():
-          self._env_for_actor_thread.append(
-            AsyncVectorEnv([_env_factory for _ in range(num_envs)], context="spawn")
-          )
+      self._env_for_actor_thread.append(_make_vec_env(vectorization_mode, env_factory, num_envs))
 
     sample_key, key = jax.random.split(key)
     sample_key = jax.random.split(sample_key, num_envs)
-    env_info = env_info_from_gymnasium(env, num_envs)
+    env_0 = self._env_for_actor_thread[0]
+    env_info = env_info_from_gymnasium(env_0, num_envs)
     self._action_space = env_info.action_space
     self._example_action = jax.vmap(self._action_space.sample)(sample_key)
     self._agent = agent
@@ -572,7 +588,7 @@ class GymnasiumLoop:
 
   def _actor_cycle(
     self,
-    env: VectorEnv,
+    env: VectorEnv | GymnasiumEnv,
     actor_state: typing.Any,
     nets: typing.Any,
     env_step: EnvStep,
@@ -592,7 +608,11 @@ class GymnasiumLoop:
 
         with nvtx_annotate("env.step"):
           obs, reward, done, trunc, info = env.step(np.array(action_and_state.action))
-        env_step = EnvStep(done | trunc, obs, action_and_state.action, reward)
+        # the type ignore is needed because the type returned by a regular GymnasiumEnv
+        # is a scalar, but we actually will have either a vector env or an envpool env.
+        # envpool envs are subclasses of GymnasiumEnv, but don't respect its annotated
+        # return types :-(.
+        env_step = EnvStep(done | trunc, obs, action_and_state.action, reward)  # pyright: ignore[reportArgumentType]
 
         trajectory.append(env_step)
         step_infos.append(info)

@@ -35,8 +35,10 @@ agent-r2d2 = [
     "gymnasium[other]>=1.0.0",
     "chex>=0.1.88",
     "distrax>=0.1.5",
+    "envpool>=0.8.4",
     "jax-loop-utils[audio-video]>=0.0.14",
     "optax>=0.2.4",
+    "numpy<2.0.0",                         # https://github.com/sail-sg/envpool/issues/321
     "tensorboard>=2.15.0",
     "torch>=2.0.0",
 ]
@@ -89,7 +91,7 @@ select = [
 # restrict to platforms we care about so that version resolution is faster and more likely to succeed
 # (e.g. don't fail if a package isn't built for windows)
 environments = [
-    "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version>='3.12'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version>='3.11'",
 ]
 
 [[tool.uv.index]]
