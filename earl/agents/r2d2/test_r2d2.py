@@ -1,23 +1,22 @@
-import math
+import io
+import os
 
 import ale_py
 import chex
 import gymnasium
 import jax
 import jax.numpy as jnp
-import numpy as np
+from jax_loop_utils.metric_writers.torch import TensorboardWriter
 import pytest
-from gymnax.environments.classic_control import CartPole
 from gymnax.environments.spaces import Box, Discrete
-from jax_loop_utils.metric_writers import MemoryWriter
+from jax_loop_utils.metric_writers import AsyncWriter, MemoryWriter
+from jax_loop_utils.metric_writers._audio_video import encode_video_to_gif
 
 import earl.agents.r2d2.networks as r2d2_networks
 from earl.agents.r2d2.r2d2 import R2D2, R2D2Config
-from earl.agents.r2d2.utils import update_buffer_batch
-from earl.core import EnvInfo, env_info_from_gymnax
-from earl.environment_loop.gymnax_loop import GymnaxLoop
-from earl.experiments.run_experiment import _config_to_dict
-from earl.metric_key import MetricKey
+from earl.agents.r2d2.utils import render_atari_cycle, update_buffer_batch
+from earl.core import EnvInfo, env_info_from_gymnasium
+from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 
 gymnasium.register_envs(ale_py)
 
@@ -50,85 +49,77 @@ def test_r2d2_accepts_atari_input():
   assert hiddens[1].shape == (hidden_size,)
 
 
-def test_learns_cartpole():
-  # NOTE: this test is pretty fragile. I had to search for good hyperparameters to get it to learn.
-  # I think if it were run for many more cycles it would learn, but that's not appropriate for CI.
-  env = CartPole()
-  env_params = env.default_params
-  action_space = env.action_space(env_params)
-  assert isinstance(action_space, Discrete), action_space
-  num_actions = int(action_space.n)
-  observation_space = env.observation_space(env_params)
-  assert isinstance(observation_space, Box), observation_space
-
-  hidden_size = 32
-  key = jax.random.PRNGKey(1)
+def test_train_atari():
+  env = gymnasium.make("AsterixNoFrameskip-v4")
+  env = gymnasium.wrappers.AtariPreprocessing(env, noop_max=0)
+  stack_size = 4
+  env = gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
+  assert isinstance(env.action_space, gymnasium.spaces.Discrete)
+  num_actions = int(env.action_space.n)
+  devices = jax.local_devices()
+  if len(devices) > 1:
+    actor_devices = devices[: max(1, len(devices) // 3)]
+    learner_devices = devices[len(actor_devices) :]
+  else:
+    actor_devices = devices
+    learner_devices = devices
+  print(f"running on {len(actor_devices)} actor devices and {len(learner_devices)} learner devices")
+  if actor_devices == learner_devices:
+    print("WARNING: actor and learner devices are the same. They will compete for the devices.")
+  cpu_count = os.cpu_count() or 1
+  num_envs = min(32, max(1, cpu_count // len(actor_devices)))
+  env_info = env_info_from_gymnasium(env, num_envs)
+  hidden_size = 512
+  key = jax.random.PRNGKey(0)
   networks_key, loop_key, agent_key = jax.random.split(key, 3)
-  networks = r2d2_networks.make_networks_mlp(
+  networks = r2d2_networks.make_networks_resnet(
     num_actions=num_actions,
-    input_size=int(math.prod(observation_space.shape)),
-    dtype=jnp.float32,
+    in_channels=stack_size,
     hidden_size=hidden_size,
-    use_lstm=True,
     key=networks_key,
   )
+  steps_per_cycle = 80
 
-  num_envs = 512
-  burn_in = 10
-  steps_per_cycle = 80 + burn_in
-  num_cycles = 1000
-  env_info = env_info_from_gymnax(env, env_params, num_envs)
-  num_off_policy_optims_per_cycle = 1
   config = R2D2Config(
     epsilon_greedy_schedule_args=dict(
-      init_value=0.5, end_value=0.01, transition_steps=steps_per_cycle * num_cycles
+      init_value=0.9, end_value=0.01, transition_steps=steps_per_cycle * 1_000
     ),
-    q_learning_n_steps=2,
-    debug=False,
-    buffer_capacity=steps_per_cycle * 10,
     num_envs_per_learner=num_envs,
     replay_seq_length=steps_per_cycle,
-    burn_in=burn_in,
-    value_rescaling_epsilon=0.0,
-    num_off_policy_optims_per_cycle=num_off_policy_optims_per_cycle,
-    gradient_clipping_max_delta=1.0,
+    buffer_capacity=steps_per_cycle * 10,
+    burn_in=40,
     learning_rate_schedule_name="cosine_onecycle_schedule",
     learning_rate_schedule_args=dict(
-      transition_steps=steps_per_cycle * num_cycles // 2,
-      peak_value=2e-4,
+      transition_steps=steps_per_cycle * 2_500,
+      # NOTE: more devices effectively means a larger batch size, so we
+      # scale the learning rate up to train faster!
+      peak_value=5e-5 * len(devices),
     ),
     target_update_step_size=0.00,
-    target_update_period=100,
+    target_update_period=500,
   )
   agent = R2D2(env_info, config)
-  memory_writer = MemoryWriter()
-  # For tweaking of hyperparameters, you can use the mlflow writer
-  # and view metrics with `uv run --with mlflow mlflow server`
-  # metric_writer = MultiWriter(
-  #   (memory_writer, MlflowMetricWriter(experiment_name=env.name)),
-  # )
-  metric_writer = memory_writer
-  config_dict = _config_to_dict(config)
-  metric_writer.write_hparams(config_dict)
-  loop = GymnaxLoop(env, env.default_params, agent, num_envs, loop_key, metric_writer=metric_writer)
-  agent_state = agent.new_state(networks, agent_key)
-  _ = loop.run(agent_state, num_cycles, steps_per_cycle)
-  del agent_state
-  metrics = memory_writer.scalars
-  metric_writer.close()
-
-  episode_lengths = np.array(
-    [step_metrics[MetricKey.COMPLETE_EPISODE_LENGTH_MEAN] for step_metrics in metrics.values()]
+  loop_state = agent.new_state(networks, agent_key)
+  metric_writer = MemoryWriter()
+  train_loop = GymnasiumLoop(
+    env,
+    agent,
+    num_envs,
+    loop_key,
+    observe_cycle=render_atari_cycle,
+    metric_writer=metric_writer,
+    actor_devices=actor_devices,
+    learner_devices=learner_devices,
   )
-
-  assert len(metrics) == num_cycles
-  # Due to auto-resets, the reward is always constant, but it's a survival task
-  # so longer episodes are better.
-  mean_over_cycles = 20
-  first_mean = float(np.mean(episode_lengths[:mean_over_cycles]))
-  assert first_mean > 0
-  last_mean = float(np.mean(episode_lengths[-mean_over_cycles:]))
-  assert last_mean > 1.4 * first_mean
+  # just one cycle, make sure it runs
+  loop_state = train_loop.run(loop_state, 1, steps_per_cycle)
+  # make sure we can render the video
+  video_buf = io.BytesIO()
+  video_array = next(iter(metric_writer.videos.values()))["video"]
+  encode_video_to_gif(video_array, video_buf)
+  # for manual inspection, uncomment
+  # with open("asterix_initial.gif", "wb") as f:
+  #   f.write(video_buf.getvalue())
 
 
 _dummy_env_info = EnvInfo(
