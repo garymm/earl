@@ -479,11 +479,6 @@ class GymnasiumLoop:
         except queue.Empty:
           break
 
-      agent_state = dataclasses.replace(
-        agent_state,
-        # Not ideal. See comment above where we pass actor state to the actor thread.
-        actor=pytree_get_index_0(actor_experiences[-1].cycle_result.agent_state),
-      )
       cycle_result = actor_experiences[-1].cycle_result
       if self._actor_only:
         learn_duration = 0
@@ -541,6 +536,11 @@ class GymnasiumLoop:
 
     self._stop_actor_threads()
     env_steps = [at._env_step for at in self._actor_threads]
+    agent_state = dataclasses.replace(
+      agent_state,
+      # Not ideal. See comment above where we pass actor state to the actor thread.
+      actor=self._actor_threads[-1]._actor_state,
+    )
     return Result(
       agent_state,
       None,
