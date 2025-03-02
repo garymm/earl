@@ -50,12 +50,17 @@ def test_r2d2_accepts_atari_input():
 
 
 def test_train_atari():
-  env = gymnasium.make("AsterixNoFrameskip-v4")
-  env = gymnasium.wrappers.AtariPreprocessing(env, noop_max=0)
   stack_size = 4
-  env = gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
+
+  def env_factory():
+    env = gymnasium.make("AsterixNoFrameskip-v4")
+    env = gymnasium.wrappers.AtariPreprocessing(env, noop_max=0)
+    return gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
+
+  env = env_factory()
   assert isinstance(env.action_space, gymnasium.spaces.Discrete)
   num_actions = int(env.action_space.n)
+  env.close()
   devices = jax.local_devices()
   if len(devices) > 1:
     actor_devices = devices[: max(1, len(devices) // 3)]
@@ -102,7 +107,7 @@ def test_train_atari():
   loop_state = agent.new_state(networks, agent_key)
   metric_writer = MemoryWriter()
   train_loop = GymnasiumLoop(
-    env,
+    env_factory,
     agent,
     num_envs,
     loop_key,
