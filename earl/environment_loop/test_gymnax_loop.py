@@ -9,7 +9,8 @@ from jax_loop_utils.metric_writers.noop_writer import NoOpWriter
 
 from earl.agents.random_agent.random_agent import RandomAgent
 from earl.core import ConflictingMetricError, EnvStep, Metrics, env_info_from_gymnax
-from earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
+from earl.environment_loop.gymnax_loop import GymnaxLoop
+from earl.metric_key import MetricKey
 from earl.utils.prng import keygen
 
 
