@@ -1,3 +1,4 @@
+import dataclasses
 import io
 import os
 
@@ -6,10 +7,9 @@ import chex
 import gymnasium
 import jax
 import jax.numpy as jnp
-from jax_loop_utils.metric_writers.torch import TensorboardWriter
 import pytest
 from gymnax.environments.spaces import Box, Discrete
-from jax_loop_utils.metric_writers import AsyncWriter, MemoryWriter
+from jax_loop_utils.metric_writers import MemoryWriter
 from jax_loop_utils.metric_writers._audio_video import encode_video_to_gif
 
 import earl.agents.r2d2.networks as r2d2_networks
@@ -172,22 +172,33 @@ def test_slice_for_replay(mlp_agent_and_networks):
 
 def test_sample_from_experience(mlp_agent_and_networks):
   agent, networks = mlp_agent_and_networks
+  agent = dataclasses.replace(
+    agent, config=dataclasses.replace(agent.config, replay_batch_size=2 * agent.env_info.num_envs)
+  )
   key = jax.random.PRNGKey(0)
   exp_state = agent._new_experience_state(networks, key)
-  seq_idx = jnp.zeros(agent.env_info.num_envs, dtype=jnp.uint32)
-  outputs = agent._sample_from_experience(seq_idx, networks, exp_state)
-  obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre = outputs
+  outputs = agent._sample_from_experience(networks, key, exp_state)
+  sampled_seq_idx, obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre = (
+    outputs
+  )
+  assert sampled_seq_idx.shape == (agent.config.replay_batch_size,)
   assert obs_time.shape == (
     agent.config.replay_seq_length,
-    agent.env_info.num_envs,
+    agent.config.replay_batch_size,
     agent.env_info.observation_space.shape[0],
   )
-  assert action_time.shape == (agent.config.replay_seq_length, agent.env_info.num_envs)
-  assert reward_time.shape == (agent.config.replay_seq_length, agent.env_info.num_envs)
-  assert dones_time.shape == (agent.config.replay_seq_length, agent.env_info.num_envs)
+  assert action_time.shape == (agent.config.replay_seq_length, agent.config.replay_batch_size)
+  assert reward_time.shape == (agent.config.replay_seq_length, agent.config.replay_batch_size)
+  assert dones_time.shape == (agent.config.replay_seq_length, agent.config.replay_batch_size)
   # Hidden state shapes
-  assert hidden_h_pre.shape == (agent.env_info.num_envs, networks.online.lstm_cell.hidden_size)
-  assert hidden_c_pre.shape == (agent.env_info.num_envs, networks.online.lstm_cell.hidden_size)
+  assert hidden_h_pre.shape == (
+    agent.config.replay_batch_size,
+    networks.online.lstm_cell.hidden_size,
+  )
+  assert hidden_c_pre.shape == (
+    agent.config.replay_batch_size,
+    networks.online.lstm_cell.hidden_size,
+  )
 
 
 def test_update_buffer_batch():

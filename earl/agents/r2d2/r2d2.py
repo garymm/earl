@@ -81,6 +81,9 @@ class R2D2Config:
   value_rescaling_epsilon: float = 1e-3  # Epsilon parameter for h and h⁻¹.
   num_off_policy_optims_per_cycle: int = 10  # Number of off-policy optims per cycle.
   exploration_type: ExplorationType = ExplorationType.RANDOM
+  replay_batch_size: int = (
+    0  # Number of sequences to sample per cycle. If 0, use num_envs_per_learner.
+  )
 
   def __post_init__(self):
     if self.buffer_capacity % self.replay_seq_length:
@@ -139,6 +142,11 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     return h, c
 
   def _new_experience_state(self, nets: R2D2Networks, key: PRNGKeyArray) -> R2D2ExperienceState:
+    if (
+      self.config.replay_batch_size > 0
+      and self.config.replay_batch_size % self._experience_state_batch_size()
+    ):
+      raise ValueError("replay_batch_size must be divisible by _experience_state_batch_size.")
     buffer_capacity = self.config.buffer_capacity
     sequence_capacity = buffer_capacity // self.config.replay_seq_length
     num_envs = self.config.num_envs_per_learner or self.env_info.num_envs
@@ -157,6 +165,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     size = jnp.zeros((num_envs,), dtype=jnp.uint32)
     priority = jnp.zeros((num_envs, sequence_capacity), dtype=jnp.float32)
     if self.config.store_hidden_states:
+      assert nets.online.lstm_cell is not None
       hidden_state_h = jnp.zeros((num_envs, sequence_capacity, nets.online.lstm_cell.hidden_size))
       hidden_state_c = jnp.zeros((num_envs, sequence_capacity, nets.online.lstm_cell.hidden_size))
     else:
@@ -181,8 +190,11 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       key=key,
     )
 
-  def _actor_batch_size(self) -> int:
+  def _experience_state_batch_size(self) -> int:
     return self.config.num_envs_per_learner or self.env_info.num_envs
+
+  def _replay_batch_size(self) -> int:
+    return self.config.replay_batch_size or self._experience_state_batch_size()
 
   def _act(
     self, actor_state: R2D2ActorState, nets: R2D2Networks, env_step: EnvStep
@@ -197,7 +209,8 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
         q_values,
         epsilon,  # pyright: ignore[reportArgumentType]
       ).sample(seed=key)
-    elif self.config.exploration_type == ExplorationType.STICKY:
+    else:
+      assert self.config.exploration_type == ExplorationType.STICKY
       greedy_action = jnp.argmax(q_values, axis=-1)
       sticky_action = env_step.prev_action
       action = jnp.where(
@@ -227,7 +240,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
 
   @functools.partial(jax.jit, static_argnums=(0, 3))
   def _slice_for_replay(self, data: jax.Array, start_idx: jax.Array, length: int) -> jax.Array:
-    B = self._actor_batch_size()
+    B = self._experience_state_batch_size()
     assert start_idx.shape == (B,)
     assert data.shape[0] == B
 
@@ -240,20 +253,19 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     indices_expanded = indices.reshape(indices.shape + (1,) * extra_dims)
 
     # Use take_along_axis to extract values along the time axis.
-    slices = jnp.take_along_axis(data, indices_expanded, axis=1)  # shape [B, length, ...]
-    # Swap to time-major format [length, B, ...]
-    return jnp.swapaxes(slices, 0, 1)
+    return jnp.take_along_axis(data, indices_expanded, axis=1)  # shape [B, length, ...]
 
-  def _sample_from_experience(
+  def _sample_one_experience_batch(
     self, seq_idx: jax.Array, nets: R2D2Networks, experience_state: R2D2ExperienceState
   ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Samples _experience_state_batch_size() sequences from experience."""
     seq_length = self.config.replay_seq_length
-    B = self._actor_batch_size()
+    B = self._experience_state_batch_size()
     obs_idx = seq_idx * seq_length
-    obs_time = self._slice_for_replay(experience_state.observation, obs_idx, seq_length)
-    action_time = self._slice_for_replay(experience_state.action, obs_idx, seq_length)
-    reward_time = self._slice_for_replay(experience_state.reward, obs_idx, seq_length)
-    dones_time = self._slice_for_replay(experience_state.new_episode, obs_idx, seq_length)
+    obs = self._slice_for_replay(experience_state.observation, obs_idx, seq_length)
+    action = self._slice_for_replay(experience_state.action, obs_idx, seq_length)
+    reward = self._slice_for_replay(experience_state.reward, obs_idx, seq_length)
+    dones = self._slice_for_replay(experience_state.new_episode, obs_idx, seq_length)
     if self.config.store_hidden_states:
       hidden_h_pre = experience_state.hidden_state_h[jnp.arange(B), seq_idx]
       hidden_c_pre = experience_state.hidden_state_c[jnp.arange(B), seq_idx]
@@ -264,11 +276,48 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       assert hidden_h_pre.shape == (B, nets.online.lstm_cell.hidden_size)
       assert hidden_c_pre.shape == (B, nets.online.lstm_cell.hidden_size)
     assert isinstance(self.env_info.observation_space, gymnax_spaces.Box)
-    assert obs_time.shape == (seq_length, B, *self.env_info.observation_space.shape)
-    assert action_time.shape == (seq_length, B)
-    assert reward_time.shape == (seq_length, B)
-    assert dones_time.shape == (seq_length, B)
-    return obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre
+    assert obs.shape == (B, seq_length, *self.env_info.observation_space.shape)
+    assert action.shape == (B, seq_length)
+    assert reward.shape == (B, seq_length)
+    assert dones.shape == (B, seq_length)
+    return obs, action, reward, dones, hidden_h_pre, hidden_c_pre
+
+  def _sample_from_experience(
+    self, nets: R2D2Networks, key: PRNGKeyArray, experience_state: R2D2ExperienceState
+  ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    # Number of sequences (batch size).
+    B = self._replay_batch_size()
+    batch_size_multiplier = B // self._experience_state_batch_size()
+    categorical_ax1 = functools.partial(jax.random.categorical, axis=1)
+    random_idx = jax.vmap(categorical_ax1, in_axes=(0, None))(
+      jax.random.split(key, batch_size_multiplier), experience_state.priority
+    )
+    assert random_idx.shape == (batch_size_multiplier, self.config.num_envs_per_learner)
+    size_sequences = experience_state.size // self.config.replay_seq_length
+    # Avoid sampling indices that are beyond the end of the experience buffer.
+    # Will only happen before the buffer is filled once.
+    sampled_seq_idx = jnp.minimum(random_idx, size_sequences - 1)
+    obs, action, reward, dones, hidden_h_pre, hidden_c_pre = jax.vmap(
+      self._sample_one_experience_batch, in_axes=(0, None, None)
+    )(sampled_seq_idx, nets, experience_state)
+    # squash the batch_size_multiplier dimension and the experience_state_batch_size dimension
+    sampled_seq_idx, obs, action, reward, dones, hidden_h_pre, hidden_c_pre = [
+      jnp.reshape(x, (B, *x.shape[2:]))
+      for x in (sampled_seq_idx, obs, action, reward, dones, hidden_h_pre, hidden_c_pre)
+    ]
+    # swap to time first, then batch.
+    obs_time, action_time, reward_time, dones_time = [
+      jnp.swapaxes(x, 1, 0) for x in (obs, action, reward, dones)
+    ]
+    return (
+      sampled_seq_idx,
+      obs_time,
+      action_time,
+      reward_time,
+      dones_time,
+      hidden_h_pre,
+      hidden_c_pre,
+    )
 
   def _loss(
     self, nets: R2D2Networks, opt_state: R2D2OptState, experience_state: R2D2ExperienceState
@@ -278,25 +327,14 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     q_learning_n_steps = self.config.q_learning_n_steps
     eps = self.config.value_rescaling_epsilon
 
-    # Number of sequences (batch size).
-    B = experience_state.observation.shape[0]
-    assert self._actor_batch_size() == B
-    random_idx = jax.random.categorical(opt_state.key, experience_state.priority, axis=1)
-    assert random_idx.shape == (B,)
-    size_sequences = experience_state.size // seq_length
-    # Avoid sampling indices that are beyond the end of the experience buffer.
-    # Will only happen before the buffer is filled once.
-    sampled_seq_idx = jnp.minimum(random_idx, size_sequences - 1)
-    # _time means time first, batch last.
-    obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre = (
-      self._sample_from_experience(sampled_seq_idx, nets, experience_state)
+    sampled_seq_idx, obs_time, action_time, reward_time, dones_time, hidden_h_pre, hidden_c_pre = (
+      self._sample_from_experience(nets, opt_state.key, experience_state)
     )
-
     # # Debug the sampled experience data
     # jax.debug.print("Sampled dones_time shape: {}", dones_time.shape)
     if self.config.debug:
       jax.debug.print("Sampled dones_time content: {}", dones_time)
-
+    B = self._replay_batch_size()
     assert action_time.shape == (seq_length, B), action_time.shape
     online_hidden = hidden_h_pre, hidden_c_pre
     target_hidden = hidden_h_pre, hidden_c_pre
@@ -409,7 +447,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     actor_state_post: R2D2ActorState,
     trajectory: EnvStep,
   ) -> R2D2ExperienceState:
-    B = self._actor_batch_size()
+    B = self._experience_state_batch_size()
     if trajectory.reward.shape[0] != B:
       raise ValueError("trajectory.reward.shape[0] must be equal to num_envs_per_learner.")
     if trajectory.reward.shape[1] != self.config.replay_seq_length:
@@ -461,6 +499,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       new_hidden_c = experience_state.hidden_state_c
     new_ptr = (experience_state.pointer + seq_length) % buffer_capacity
     new_size = jnp.minimum(experience_state.size + seq_length, buffer_capacity)
+    # TODO: set priority properly
     return R2D2ExperienceState(
       observation=new_obs,
       action=new_actions,
