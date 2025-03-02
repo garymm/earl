@@ -22,6 +22,7 @@ if __name__ == "__main__":
     learner_devices = devices
   cpu_count = os.cpu_count() or 1
   num_envs = max(1, cpu_count // len(actor_devices))
+  assert num_envs % len(learner_devices) == 0
   print(f"num_envs: {num_envs}")
   env_factory = functools.partial(envpool.make_gymnasium, "Asterix-v5", num_envs=num_envs)
   stack_size = 4
@@ -50,7 +51,7 @@ if __name__ == "__main__":
     epsilon_greedy_schedule_args=dict(
       init_value=0.9, end_value=0.01, transition_steps=steps_per_cycle * 1_000
     ),
-    num_envs_per_learner=num_envs,
+    num_envs_per_learner=num_envs // len(learner_devices),
     replay_seq_length=steps_per_cycle,
     buffer_capacity=steps_per_cycle * 10,
     burn_in=40,
@@ -79,5 +80,4 @@ if __name__ == "__main__":
     learner_devices=learner_devices,
     vectorization_mode="none",
   )
-  # just one cycle, make sure it runs
   loop_state = train_loop.run(loop_state, num_cycles, steps_per_cycle)
