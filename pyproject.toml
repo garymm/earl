@@ -71,6 +71,8 @@ filterwarnings = [
     # action:message:category:module:line
     "error",
     "ignore:jax.interpreters.xla.pytype_aval_mappings is deprecated.:DeprecationWarning",
+    # triggered by envpool
+    "ignore:Shape is deprecated; use StableHLO instead.:DeprecationWarning",
 ]
 
 [tool.ruff]
