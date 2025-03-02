@@ -479,17 +479,17 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       trajectory.new_episode,
     )
 
-    def update_hidden(hidden_buffer, pointer, init_hidden):
+    def update_seq_val(buffer, pointer, new_val):
       seq_index = pointer // seq_length
-      return hidden_buffer.at[seq_index].set(init_hidden)
+      return buffer.at[jnp.arange(B), seq_index].set(new_val)
 
     if self.config.store_hidden_states:
-      new_hidden_h = jax.vmap(update_hidden)(
+      new_hidden_h = update_seq_val(
         experience_state.hidden_state_h,
         experience_state.pointer,
         actor_state_pre.lstm_h_c[0],
       )
-      new_hidden_c = jax.vmap(update_hidden)(
+      new_hidden_c = update_seq_val(
         experience_state.hidden_state_c,
         experience_state.pointer,
         actor_state_pre.lstm_h_c[1],
@@ -499,7 +499,9 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       new_hidden_c = experience_state.hidden_state_c
     new_ptr = (experience_state.pointer + seq_length) % buffer_capacity
     new_size = jnp.minimum(experience_state.size + seq_length, buffer_capacity)
-    # TODO: set priority properly
+    new_priority = update_seq_val(
+      experience_state.priority, experience_state.pointer, jnp.ones((B,), dtype=jnp.float32)
+    )
     return R2D2ExperienceState(
       observation=new_obs,
       action=new_actions,
@@ -507,7 +509,7 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       new_episode=new_dones,
       pointer=new_ptr,
       size=new_size,
-      priority=experience_state.priority,
+      priority=new_priority,
       hidden_state_h=new_hidden_h,
       hidden_state_c=new_hidden_c,
     )
