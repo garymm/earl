@@ -54,6 +54,7 @@ if __name__ == "__main__":
     num_envs_per_learner=num_envs // len(learner_devices),
     replay_seq_length=steps_per_cycle,
     buffer_capacity=steps_per_cycle * 10,
+    replay_batch_size=num_envs * 2,
     burn_in=40,
     learning_rate_schedule_name="cosine_onecycle_schedule",
     learning_rate_schedule_args=dict(
