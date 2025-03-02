@@ -142,7 +142,10 @@ class ResNetTorso(eqx.Module):
       group_blocks = []
       for _ in range(num_blocks):
         block = ResidualBlock(
-          num_channels=channels, use_layer_norm=use_layer_norm, key=block_keys[key_idx]
+          num_channels=channels,
+          use_layer_norm=use_layer_norm,
+          key=block_keys[key_idx],
+          dtype=dtype,
         )
         group_blocks.append(block)
         key_idx += 1
@@ -176,6 +179,7 @@ class DeepAtariTorso(eqx.Module):
   mlp_head: eqx.nn.MLP
   use_layer_norm: bool = eqx.field(static=True)
   channel_last: bool = eqx.field(static=True)
+  dtype: jnp.dtype = eqx.field(static=True)
 
   def __init__(
     self,
@@ -193,6 +197,7 @@ class DeepAtariTorso(eqx.Module):
     keys = jax.random.split(key, 2)
     self.use_layer_norm = use_layer_norm
     self.channel_last = channel_last
+    self.dtype = dtype
     self.resnet = ResNetTorso(
       channels_per_group=channels_per_group,
       blocks_per_group=blocks_per_group,
@@ -219,8 +224,10 @@ class DeepAtariTorso(eqx.Module):
     )
 
   def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-    if x.dtype == jnp.uint8:
-      x = x.astype(jnp.float32) / 255.0
+    was_uint8 = x.dtype == jnp.uint8
+    x = x.astype(self.dtype)
+    if was_uint8:
+      x = x / 255.0
     if self.channel_last:
       x = jnp.swapaxes(x, 0, self.resnet.in_channels - 1)
     output = self.resnet(x)

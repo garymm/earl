@@ -43,6 +43,7 @@ if __name__ == "__main__":
     in_channels=stack_size,
     hidden_size=hidden_size,
     key=networks_key,
+    dtype=jax.numpy.bfloat16,
   )
   steps_per_cycle = 80
   num_cycles = 10_000
