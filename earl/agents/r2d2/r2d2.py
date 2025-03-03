@@ -402,12 +402,13 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
       in_axes=1,
       out_axes=1,
     )
+    # the vmap and partial seem to have confused pyright here.
     batch_td_error = batch_td_error_fn(
       online_q[:-1],
       action_time[:-1],
       target_q[1:],
       selector_actions[1:],
-      reward_time[:-1],
+      reward_time[:-1],  # pyright: ignore[reportCallIssue]
       discount_time[:-1],
     )
     batch_loss = 0.5 * jnp.square(batch_td_error).sum(axis=0)
