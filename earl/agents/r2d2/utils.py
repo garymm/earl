@@ -15,44 +15,6 @@ Array = jax.Array
 # BEGIN copied from rlax
 # Below copied from rlax because its package is unusable with Bazel
 # due to https://github.com/google-deepmind/rlax/issues/133.
-def double_q_learning(
-  q_tm1: Array,
-  a_tm1: Array,
-  r_t: Array,
-  discount_t: Array,
-  q_t_value: Array,
-  q_t_selector: Array,
-  stop_target_gradients: bool = True,
-) -> Array:
-  """Calculates the double Q-learning temporal difference error.
-
-  See "Double Q-learning" by van Hasselt.
-  (https://papers.nips.cc/paper/3964-double-q-learning.pdf).
-
-  Args:
-    q_tm1: Q-values at time t-1.
-    a_tm1: action index at time t-1.
-    r_t: reward at time t.
-    discount_t: discount at time t.
-    q_t_value: Q-values at time t.
-    q_t_selector: selector Q-values at time t.
-    stop_target_gradients: bool indicating whether or not to apply stop gradient
-      to targets.
-
-  Returns:
-    Double Q-learning temporal difference error.
-  """
-  chex.assert_rank([q_tm1, a_tm1, r_t, discount_t, q_t_value, q_t_selector], [1, 0, 0, 0, 1, 1])
-  chex.assert_type(
-    [q_tm1, a_tm1, r_t, discount_t, q_t_value, q_t_selector],
-    [float, int, float, float, float, float],
-  )
-
-  target_tm1 = r_t + discount_t * q_t_value[q_t_selector.argmax()]
-  target_tm1 = jax.lax.select(stop_target_gradients, jax.lax.stop_gradient(target_tm1), target_tm1)
-  return target_tm1 - q_tm1[a_tm1]
-
-
 def n_step_bootstrapped_returns(
   r_t: Array,
   discount_t: Array,
