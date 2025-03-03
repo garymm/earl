@@ -31,8 +31,6 @@ keywords = ["Equinox", "JAX", "Reinforcement Learning"]
 
 [project.optional-dependencies]
 agent-r2d2 = [
-    "gymnasium[atari]>=1.0.0",
-    "gymnasium[other]>=1.0.0",
     "chex>=0.1.88",
     "distrax>=0.1.5",
     "envpool>=0.8.4",

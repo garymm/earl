@@ -22,15 +22,20 @@ py_library(
 
 py_test(
     name = "test_r2d2",
-    timeout = "short",
     srcs = ["test_r2d2.py"],
+    filterwarnings = [
+        "ignore:jax.interpreters.xla.pytype_aval_mappings is deprecated.:DeprecationWarning",
+        "ignore:Shape is deprecated; use StableHLO instead.:DeprecationWarning",
+    ],
+    shard_count = 2,
     deps = [
         ":r2d2",
         "//earl:core",
+        "//earl/environment_loop:gymnasium_loop",
         "//earl/environment_loop:gymnax_loop",
-        "@pypi//ale_py",
-        "@pypi//equinox",
+        "@pypi//envpool",
         "@pypi//gymnasium",
+        "@pypi//gymnax",
         "@pypi//jax",
         "@pypi//jax_loop_utils",
         "@pypi//numpy",

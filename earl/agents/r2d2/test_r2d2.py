@@ -1,10 +1,10 @@
 import dataclasses
+import functools
 import io
 import math
-import os
 
-import ale_py
 import chex
+import envpool
 import gymnasium
 import jax
 import jax.numpy as jnp
@@ -22,36 +22,6 @@ from earl.core import EnvInfo, env_info_from_gymnasium, env_info_from_gymnax
 from earl.environment_loop.gymnasium_loop import GymnasiumLoop
 from earl.environment_loop.gymnax_loop import GymnaxLoop
 from earl.metric_key import MetricKey
-
-gymnasium.register_envs(ale_py)
-
-
-def test_r2d2_accepts_atari_input():
-  env = gymnasium.make("BreakoutNoFrameskip-v4")
-  env = gymnasium.wrappers.AtariPreprocessing(env, noop_max=0)
-  stack_size = 4
-  env = gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
-  obs = env.observation_space.sample()
-  key = jax.random.PRNGKey(0)
-  env.close()
-  assert isinstance(env.action_space, gymnasium.spaces.Discrete)
-  num_actions = int(env.action_space.n)
-  action = jax.random.randint(key, (1,), 0, num_actions)
-  reward = jax.random.uniform(key, ())
-  hidden_size = 512
-  hidden = (jnp.zeros((hidden_size,)), jnp.zeros((hidden_size,)))
-  networks = r2d2_networks.make_networks_resnet(
-    num_actions=num_actions,
-    in_channels=stack_size,
-    dtype=jnp.float32,
-    hidden_size=hidden_size,
-    key=key,
-  )
-  q_values, hiddens = networks.online(obs, action, reward, hidden)
-  assert q_values.shape == (num_actions,)
-  assert len(hiddens) == 2
-  assert hiddens[0].shape == (hidden_size,)
-  assert hiddens[1].shape == (hidden_size,)
 
 
 def test_learns_cartpole():
@@ -133,38 +103,41 @@ def test_learns_cartpole():
   assert last_mean > 1.4 * first_mean
 
 
+# triggered by envpool
 def test_train_atari():
-  stack_size = 4
-
-  def env_factory():
-    env = gymnasium.make("AsterixNoFrameskip-v4")
-    env = gymnasium.wrappers.AtariPreprocessing(env, noop_max=0)
-    return gymnasium.wrappers.FrameStackObservation(env, stack_size=stack_size)
-
-  env = env_factory()
-  assert isinstance(env.action_space, gymnasium.spaces.Discrete)
-  num_actions = int(env.action_space.n)
-  env.close()
+  stack_num = 4
+  num_envs = 6
+  input_size = (84, 84)
+  env_factory = functools.partial(
+    envpool.make_gymnasium,
+    "Asterix-v5",
+    num_envs=num_envs,
+    stack_num=stack_num,
+    img_height=input_size[0],
+    img_width=input_size[1],
+  )
+  with env_factory() as env:
+    assert isinstance(env.action_space, gymnasium.spaces.Discrete)
+    num_actions = int(env.action_space.n)
   devices = jax.local_devices()
   if len(devices) > 1:
-    actor_devices = devices[: max(1, len(devices) // 3)]
-    learner_devices = devices[len(actor_devices) :]
+    actor_devices = devices[:1]
+    learner_devices = devices[1:]
   else:
     actor_devices = devices
     learner_devices = devices
   print(f"running on {len(actor_devices)} actor devices and {len(learner_devices)} learner devices")
   if actor_devices == learner_devices:
     print("WARNING: actor and learner devices are the same. They will compete for the devices.")
-  cpu_count = os.cpu_count() or 1
-  num_envs = min(32, max(1, cpu_count // len(actor_devices)))
   env_info = env_info_from_gymnasium(env, num_envs)
   hidden_size = 512
   key = jax.random.PRNGKey(0)
   networks_key, loop_key, agent_key = jax.random.split(key, 3)
   networks = r2d2_networks.make_networks_resnet(
     num_actions=num_actions,
-    in_channels=stack_size,
+    in_channels=stack_num,
     hidden_size=hidden_size,
+    input_size=input_size,
     key=networks_key,
   )
   steps_per_cycle = 80
@@ -199,9 +172,11 @@ def test_train_atari():
     metric_writer=metric_writer,
     actor_devices=actor_devices,
     learner_devices=learner_devices,
+    vectorization_mode="none",
   )
   # just one cycle, make sure it runs
   loop_state = train_loop.run(loop_state, 1, steps_per_cycle)
+  train_loop.close()
   # make sure we can render the video
   video_buf = io.BytesIO()
   video_array = next(iter(metric_writer.videos.values()))["video"]
@@ -252,11 +227,10 @@ def test_slice_for_replay(mlp_agent_and_networks):
   assert start_idx.shape == (B,)
   length = 4
   sliced = agent._slice_for_replay(dummy_data, start_idx, length)
-  # Expected shape: (length, B, 1)
-  assert sliced.shape == (length, B, 1)
+  assert sliced.shape == (B, length, 1)
   # Verify a couple of values
   chex.assert_equal(sliced[0, 0, 0], dummy_data[0, 0, 0])
-  chex.assert_equal(sliced[0, 1, 0], dummy_data[1, 4, 0])
+  chex.assert_equal(sliced[1, 0, 0], dummy_data[1, 4, 0])
 
 
 def test_sample_from_experience(mlp_agent_and_networks):

@@ -6,7 +6,7 @@ module(
 )
 
 # BEGIN python toolchain
-_PYTHON_VERSION = "3.12"
+_PYTHON_VERSION = "3.11"  # latest that supports envpool
 
 bazel_dep(name = "rules_python", version = "1.1.0", dev_dependency = True)
 
@@ -14,7 +14,7 @@ python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(python_version = _PYTHON_VERSION)
 # END python toolchain
 
-# BEGIN python dependencies
+# BEGIN python dependenciesP
 bazel_dep(name = "rules_uv", version = "0.53.0", dev_dependency = True)
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
