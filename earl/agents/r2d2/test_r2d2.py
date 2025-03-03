@@ -42,9 +42,6 @@ def test_train_atari():
   else:
     actor_devices = devices
     learner_devices = devices
-  print(f"running on {len(actor_devices)} actor devices and {len(learner_devices)} learner devices")
-  if actor_devices == learner_devices:
-    print("WARNING: actor and learner devices are the same. They will compete for the devices.")
   env_info = env_info_from_gymnasium(env, num_envs)
   hidden_size = 512
   key = jax.random.PRNGKey(0)
@@ -56,7 +53,7 @@ def test_train_atari():
     input_size=input_size,
     key=networks_key,
   )
-  steps_per_cycle = 80
+  steps_per_cycle = 10
 
   config = R2D2Config(
     epsilon_greedy_schedule_args=dict(
@@ -65,7 +62,7 @@ def test_train_atari():
     num_envs_per_learner=num_envs,
     replay_seq_length=steps_per_cycle,
     buffer_capacity=steps_per_cycle * 10,
-    burn_in=40,
+    burn_in=5,
     learning_rate_schedule_name="cosine_onecycle_schedule",
     learning_rate_schedule_args=dict(
       transition_steps=steps_per_cycle * 2_500,
