@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.core import ActionAndState, Agent, EnvStep, Metrics
+from earl.core import ActionAndState, Agent, EnvStep
 from earl.core import AgentState as CoreAgentState
 from earl.utils.sharding import shard_along_axis_0
 

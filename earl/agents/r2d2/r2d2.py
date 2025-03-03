@@ -451,11 +451,13 @@ class R2D2(Agent[R2D2Networks, R2D2OptState, R2D2ExperienceState, R2D2ActorState
     B = self._experience_state_batch_size()
     if trajectory.reward.shape[0] != B:
       raise ValueError(
-        f"trajectory.reward.shape[0] must be equal to num_envs_per_learner, got {trajectory.reward.shape[0]} and {B}"
+        f"trajectory.reward.shape[0] must be equal to num_envs_per_learner, got "
+        f"{trajectory.reward.shape[0]} and {B}"
       )
     if trajectory.reward.shape[1] != self.config.replay_seq_length:
       raise ValueError(
-        f"trajectory.reward.shape[1] must be equal to replay_seq_length, got {trajectory.reward.shape[1]} and {self.config.replay_seq_length}"
+        f"trajectory.reward.shape[1] must be equal to replay_seq_length, got "
+        f"{trajectory.reward.shape[1]} and {self.config.replay_seq_length}"
       )
     buffer_capacity = self.config.buffer_capacity
     seq_length = self.config.replay_seq_length

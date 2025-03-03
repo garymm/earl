@@ -9,6 +9,7 @@ pip_compile(
         "--no-strip-extras",
         "--extra=test",
         "--extra=agent-r2d2",
+        "--index=https://download.pytorch.org/whl/cpu",
     ],
     python_platform = "x86_64-manylinux_2_28",  # envpool needs at least 2_24
     requirements_in = "//:pyproject.toml",
