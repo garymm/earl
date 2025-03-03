@@ -44,3 +44,24 @@ py_test(
         "@pypi//pytest",
     ],
 )
+
+py_test(
+    name = "test_r2d2_learns",
+    timeout = "long",
+    srcs = ["test_r2d2_learns.py"],
+    filterwarnings = [
+        "ignore:jax.interpreters.xla.pytype_aval_mappings is deprecated.:DeprecationWarning",
+        "ignore:Shape is deprecated; use StableHLO instead.:DeprecationWarning",
+    ],
+    tags = ["manual"],
+    deps = [
+        ":r2d2",
+        "//earl:core",
+        "//earl/environment_loop:gymnax_loop",
+        "@pypi//gymnax",
+        "@pypi//jax",
+        "@pypi//jax_loop_utils",
+        "@pypi//numpy",
+        "@pypi//pytest",
+    ],
+)

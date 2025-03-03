@@ -1,3 +1,9 @@
+"""An implementation of R2D2, or Recurrent Replay Distributed DQN.
+
+NOTE: when changing, please run pytest earl/agents/r2d2/test_r2d2_learns.py to ensure it learns.
+That does not run in CI because it takes too long since we don't have a GPU in CI.
+"""
+
 import dataclasses
 import enum
 import functools
