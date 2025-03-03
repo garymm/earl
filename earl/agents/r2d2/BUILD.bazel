@@ -22,6 +22,7 @@ py_library(
 
 py_test(
     name = "test_r2d2",
+    timeout = "long",
     srcs = ["test_r2d2.py"],
     filterwarnings = [
         "ignore:jax.interpreters.xla.pytype_aval_mappings is deprecated.:DeprecationWarning",
