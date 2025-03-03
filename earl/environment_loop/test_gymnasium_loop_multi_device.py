@@ -51,13 +51,14 @@ def test_actor_learner_different_devices():
 
   num_envs = 2
   env = NoOpEnv()
+  env_factory = NoOpEnv
   env_info = env_info_from_gymnasium(env, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
   agent = RandomAgent(env_info, env_info.action_space.sample, 1)
   metric_writer = MemoryWriter()
 
   loop = GymnasiumLoop(
-    env,
+    env_factory,
     agent,
     num_envs,
     next(key_gen),
