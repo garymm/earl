@@ -24,8 +24,16 @@ if __name__ == "__main__":
   num_envs = max(1, cpu_count // len(actor_devices))
   assert num_envs % len(learner_devices) == 0
   print(f"num_envs: {num_envs}")
-  env_factory = functools.partial(envpool.make_gymnasium, "Asterix-v5", num_envs=num_envs)
-  stack_size = 4
+  stack_num = 2
+  input_size = (64, 64)
+  env_factory = functools.partial(
+    envpool.make_gymnasium,
+    "Asterix-v5",
+    num_envs=num_envs,
+    stack_num=stack_num,
+    img_height=input_size[0],
+    img_width=input_size[1],
+  )
   env = env_factory()
   assert isinstance(env.action_space, gymnasium.spaces.Discrete)
   num_actions = int(env.action_space.n)
@@ -40,13 +48,14 @@ if __name__ == "__main__":
   networks_key, loop_key, agent_key = jax.random.split(key, 3)
   networks = r2d2_networks.make_networks_resnet(
     num_actions=num_actions,
-    in_channels=stack_size,
+    in_channels=stack_num,
     hidden_size=hidden_size,
     key=networks_key,
     dtype=jax.numpy.bfloat16,
+    input_size=input_size,
   )
-  steps_per_cycle = 80
-  num_cycles = 10_000
+  steps_per_cycle = 64
+  num_cycles = 2
 
   config = R2D2Config(
     epsilon_greedy_schedule_args=dict(
@@ -56,7 +65,7 @@ if __name__ == "__main__":
     replay_seq_length=steps_per_cycle,
     buffer_capacity=steps_per_cycle * 10,
     replay_batch_size=num_envs * 2,
-    burn_in=40,
+    burn_in=16,
     learning_rate_schedule_name="cosine_onecycle_schedule",
     learning_rate_schedule_args=dict(
       transition_steps=steps_per_cycle * 2_500,
