@@ -2,18 +2,47 @@
 
 Earl is a library of reinforcement learning (RL) building blocks that strives to makes it easy to build simple, efficient, and readable agents.
 
-The word "earl" was chosen because it's a cool word that ends in "rl" 🙂. According to [Wikipedia](https://en.wikipedia.org/wiki/Earl):
+Earl is built on [JAX](https://docs.jax.dev/en/latest/) and [Equinox](https://docs.kidger.site/equinox/).
 
-> Earl (/ɜːrl, ɜːrəl/) is a rank of the nobility in the United Kingdom.
+Earl implements the two architectures described in ["Podracer architectures for scalable Reinforcement Learning"](https://arxiv.org/abs/2104.06272), which were used at DeepMind to scale training to very large batch sizes across many chips. This repository includes a few agents (AKA RL algorithms), notably R2D2 as described in “Recurrent Experience Replay In Distributed Reinforcement Learning”.
 
-Earl supports only JAX agents.
+The most important parts of Earl are:
 
-For pure JAX environments, Earl supports the [Gymnax](https://github.com/RobertTLange/gymnax/blob/main/gymnax/environments/environment.py) interface.
-For other environments, Earl will support the [Gymnasium](https://gymnasium.farama.org/api/env/) interface.
+* The [Agent](earl/core.py) abstract base class. It is designed to be flexible enough to allow implementation of a wide variety of RL algorithm, but structured enough to allow for standardized environment loops to be used for training all such agents. Earl agents are implemented using Equinox.
+* [GymnaxLoop](earl/environment_loop/gymnax_loop.py). For jax.jit-compatible environments, Earl supports the [Gymnax](https://github.com/RobertTLange/gymnax/blob/main/gymnax/environments/environment.py) interface. GymnaxLoop implements distributed training for these environments. This implements the Anakin architecture from the Podracer paper.
+* [GymnasiumLoop](earl/environment_loop/gymnasium_loop.py). For other environments, Earl will support the [Gymnasium](https://gymnasium.farama.org/api/env/) interface. GymnasiumLoop implements distributed training for these environments. This implements the Sebulba architecture from the Podracer paper.
+
+For an example of training an agent using both loops, see this [notebook](earl/agents/r2d2/train_r2d2_asterix.ipynb).
+
+Included example agent implemented in Earl:
+
+* [Simple Policy Gradient](earl/agents/simple_policy_gradient/simple_policy_gradient.py) (very simple).
+* [R2D2](earl/agents/r2d2/r2d2.py) (quite complicated).
+
+
+There is currently no package on PyPi, but Earl is pure Python, so it can be installed from source, e.g.:
+
+```sh
+uv pip install "earl @ git+https://github.com/garymm/earl.git"
+```
+
 
 ## Development
 
-Currently running tests with bazel is only supported on Linux x86_64.
+### Testing
+
+[![codecov](https://codecov.io/gh/garymm/earl/graph/badge.svg?token=MDG3TCNML8)](https://codecov.io/gh/garymm/earl)
+
+
+There are two ways to run tests:
+
+
+#### Bazel
+
+Testing with Bazel is what happens in GitHub workflows. It's good for running lots of tests in parallel and it intelligently caches results.
+However it has a high overhead so running an individual test is slower and it doesn't have the same level of control as Pytest.
+
+Currently running tests with Bazel is only supported on Linux x86_64.
 
 Install [Bazelisk](https://github.com/bazelbuild/bazelisk/blob/master/README.md), name it `bazel`.
 
@@ -23,7 +52,13 @@ Then run tests with:
 bazel test //...
 ```
 
-### IDE Setup
+
+#### Pytest
+
+To set this up first create a virtual environment (see section below), then `source .venv/bin/activate`.
+Then you can run `pytest` normally.
+
+### VEnv / IDE Setup
 
 When using VS Code intall the recommended extensions by searching for `@recommended`.
 
