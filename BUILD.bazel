@@ -8,8 +8,10 @@ pip_compile(
         "--emit-index-url",
         "--no-strip-extras",
         "--extra=test",
+        "--extra=agent-r2d2",
+        "--index=https://download.pytorch.org/whl/cpu",
     ],
-    python_platform = "x86_64-unknown-linux-gnu",
+    python_platform = "x86_64-manylinux_2_28",  # envpool needs at least 2_24
     requirements_in = "//:pyproject.toml",
     requirements_txt = "requirements_linux_x86_64.txt",
 )

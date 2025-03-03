@@ -43,19 +43,15 @@ from earl.utils.eqx_filter import filter_scan
 from earl.utils.sharding import pytree_get_index_0
 
 
-@eqx.filter_grad(has_aux=True)
+@eqx.filter_value_and_grad(has_aux=True)
 def _loss_for_cycle_grad(
-  nets_yes_grad, nets_no_grad, opt_state, experience_state, agent: Agent
-) -> tuple[Scalar, ArrayMetrics]:
+  nets_yes_grad, nets_no_grad, opt_state, experience_state: _ExperienceState, agent: Agent
+) -> tuple[Scalar, _ExperienceState]:
   # this is a free function so we don't have to pass self as first arg, since filter_grad
   # takes gradient with respect to the first arg.
   nets = eqx.combine(nets_yes_grad, nets_no_grad)
-  loss, metrics = agent.loss(nets, opt_state, experience_state)
-  raise_if_metric_conflicts(metrics)
-  # inside jit, return values are guaranteed to be arrays
-  mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
-  mutable_metrics[MetricKey.LOSS] = loss
-  return loss, mutable_metrics
+  loss, experience_state = agent.loss(nets, opt_state, experience_state)
+  return loss, experience_state
 
 
 class StepCarry(eqx.Module, typing.Generic[_ActorState]):
@@ -270,11 +266,12 @@ class GymnaxLoop:
     self, agent_state: AgentState[_Networks, _OptState, _ExperienceState, _ActorState], _
   ) -> tuple[AgentState[_Networks, _OptState, _ExperienceState, _ActorState], ArrayMetrics]:
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(agent_state.nets)
-    nets_grad, metrics = _loss_for_cycle_grad(
+    (loss, experience_state), nets_grad = _loss_for_cycle_grad(
       nets_yes_grad, nets_no_grad, agent_state.opt, agent_state.experience, self._agent
     )
     nets_grad = jax.lax.pmean(nets_grad, axis_name=self._PMAP_AXIS_NAME)
     grad_means = pytree_leaf_means(nets_grad, "grad_mean")
+    metrics: ArrayMetrics = {MetricKey.LOSS: loss}
     metrics.update(grad_means)
     nets, opt_state = self._agent.optimize_from_grads(agent_state.nets, agent_state.opt, nets_grad)
     return dataclasses.replace(agent_state, nets=nets, opt=opt_state), metrics
@@ -313,15 +310,13 @@ class GymnaxLoop:
         cycle_result.trajectory,
       )
       agent_state = dataclasses.replace(cycle_result.agent_state, experience=experience_state)
-      loss, metrics = self._agent.loss(agent_state.nets, agent_state.opt, agent_state.experience)
-      raise_if_metric_conflicts(metrics)
-      # inside jit, return values are guaranteed to be arrays
-      mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
-      mutable_metrics[MetricKey.LOSS] = loss
-      mutable_metrics.update(cycle_result.metrics)
-      return loss, dataclasses.replace(
-        cycle_result, metrics=mutable_metrics, agent_state=agent_state
+      loss, experience_state = self._agent.loss(
+        agent_state.nets, agent_state.opt, agent_state.experience
       )
+      agent_state = dataclasses.replace(agent_state, experience=experience_state)
+      metrics: ArrayMetrics = {MetricKey.LOSS: loss}
+      metrics.update(cycle_result.metrics)
+      return loss, dataclasses.replace(cycle_result, metrics=metrics, agent_state=agent_state)
 
     if not self._actor_only and not self._agent.num_off_policy_optims_per_cycle():
       # On-policy update. Calculate the gradient through the entire cycle.

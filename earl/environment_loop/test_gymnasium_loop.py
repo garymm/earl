@@ -1,5 +1,6 @@
-import dataclasses
 import time
+import typing
+from typing import Any
 
 import gymnax
 import gymnax.environments.spaces
@@ -8,6 +9,7 @@ import optax
 import pytest
 from gymnasium.envs.classic_control.cartpole import CartPoleEnv
 from gymnasium.envs.classic_control.pendulum import PendulumEnv
+from gymnasium.vector import VectorEnv
 from gymnax.environments.spaces import Box, Discrete
 from jax_loop_utils.metric_writers.memory_writer import MemoryWriter
 
@@ -32,6 +34,7 @@ from earl.utils.prng import keygen
 def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
   num_envs = 2
   env = CartPoleEnv()
+  env_factory = CartPoleEnv
   env_info = env_info_from_gymnasium(env, num_envs)
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
@@ -40,12 +43,17 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
   if not inference and not num_off_policy_updates:
     with pytest.raises(ValueError, match="On-policy training is not supported in GymnasiumLoop."):
       loop = GymnasiumLoop(
-        env, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=inference
+        env_factory,
+        agent,
+        num_envs,
+        next(key_gen),
+        metric_writer=metric_writer,
+        actor_only=inference,
       )
     return
 
   loop = GymnasiumLoop(
-    env,
+    env_factory,
     agent,
     num_envs,
     next(key_gen),
@@ -76,34 +84,35 @@ def test_gymnasium_loop(inference: bool, num_off_policy_updates: int):
     assert action_count_sum > 0
     if not inference:
       assert MetricKey.LOSS in metrics_for_step
-      assert agent._opt_count_metric_key in metrics_for_step
   if inference:
     assert result.agent_state.opt.opt_count == 0
   else:
     assert first_step_num is not None
     assert last_step_num is not None
-    assert (
-      metrics[first_step_num][agent._opt_count_metric_key]
-      != metrics[last_step_num][agent._opt_count_metric_key]
-    )
     expected_opt_count = num_cycles * (num_off_policy_updates or 1)
     assert result.agent_state.opt.opt_count == expected_opt_count
 
   assert isinstance(env_info.action_space, Discrete)
   assert env_info.action_space.n > 0
-  assert all(not env.closed for env in loop._env_for_actor_thread)
+  assert all(not typing.cast(VectorEnv, env).closed for env in loop._env_for_actor_thread)
   loop.close()
-  assert all(env.closed for env in loop._env_for_actor_thread)
+  assert all(typing.cast(VectorEnv, env).closed for env in loop._env_for_actor_thread)
 
 
 def test_bad_args():
   num_envs = 2
   env = CartPoleEnv()
+  env_factory = CartPoleEnv
   env_info = env_info_from_gymnasium(env, num_envs)
   agent = RandomAgent(env_info, env_info.action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
-    env, agent, num_envs, jax.random.PRNGKey(0), metric_writer=metric_writer, actor_only=True
+    env_factory,
+    agent,
+    num_envs,
+    jax.random.PRNGKey(0),
+    metric_writer=metric_writer,
+    actor_only=True,
   )
   agent_state = agent.new_state(None, jax.random.PRNGKey(0))
   with pytest.raises(ValueError, match="num_cycles"):
@@ -116,14 +125,23 @@ def test_bad_metric_key():
   networks = None
   num_envs = 2
   env = CartPoleEnv()
+  env_factory = CartPoleEnv
   env_info = env_info_from_gymnasium(env, num_envs)
   key_gen = keygen(jax.random.PRNGKey(0))
-  # make the agent return a metric with a key that conflicts with a built-in metric.
   agent = RandomAgent(env_info, env_info.action_space.sample, 1)
-  agent = dataclasses.replace(agent, _opt_count_metric_key=MetricKey.DURATION_SEC)
+
+  def observe_cycle(trajectory: EnvStep, step_infos: dict[Any, Any]) -> Metrics:
+    return {MetricKey.DURATION_SEC: 1}
 
   metric_writer = MemoryWriter()
-  loop = GymnasiumLoop(env, agent, num_envs, next(key_gen), metric_writer=metric_writer)
+  loop = GymnasiumLoop(
+    env_factory,
+    agent,
+    num_envs,
+    next(key_gen),
+    metric_writer=metric_writer,
+    observe_cycle=observe_cycle,
+  )
   num_cycles = 1
   steps_per_cycle = 1
   agent_state = agent.new_state(networks, jax.random.PRNGKey(0))
@@ -134,6 +152,7 @@ def test_bad_metric_key():
 def test_continuous_action_space():
   num_envs = 2
   env = PendulumEnv()
+  env_factory = PendulumEnv
   env_info = env_info_from_gymnasium(env, num_envs)
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
@@ -144,7 +163,7 @@ def test_continuous_action_space():
   agent = RandomAgent(env_info, action_space.sample, 0)
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
-    env, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=True
+    env_factory, agent, num_envs, next(key_gen), metric_writer=metric_writer, actor_only=True
   )
   num_cycles = 1
   steps_per_cycle = 1
@@ -158,6 +177,7 @@ def test_continuous_action_space():
 def test_observe_cycle():
   num_envs = 2
   env = PendulumEnv()
+  env_factory = PendulumEnv
   env_info = env_info_from_gymnasium(env, num_envs)
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
@@ -172,7 +192,7 @@ def test_observe_cycle():
     return {"ran": True}
 
   loop = GymnasiumLoop(
-    env,
+    env_factory,
     agent,
     num_envs,
     next(key_gen),
@@ -189,6 +209,7 @@ def test_observe_cycle():
 def test_benchmark_gymnasium_inference():
   num_envs = 16
   env = CartPoleEnv()
+  env_factory = CartPoleEnv
   env_info = env_info_from_gymnasium(env, num_envs)
   networks = None
   key_gen = keygen(jax.random.PRNGKey(0))
@@ -202,7 +223,7 @@ def test_benchmark_gymnasium_inference():
   )
   metric_writer = MemoryWriter()
   loop = GymnasiumLoop(
-    env,
+    env_factory,
     agent,
     num_envs,
     next(key_gen),

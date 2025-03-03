@@ -25,6 +25,7 @@ py_library(
 py_test(
     name = "test_run_experiment",
     srcs = ["test_run_experiment.py"],
+    shard_count = 2,
     deps = [
         ":run_experiment",
         "//earl/agents/random_agent",

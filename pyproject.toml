@@ -5,7 +5,7 @@ dependencies = [
     "equinox>=0.11.11",
     "gymnax",
     "gymnasium>=1.0.0",
-    "jax_loop_utils",
+    "jax-loop-utils>=0.0.13",
     "jax>=0.4.0",
     "jaxtyping>=0.2.0",
     "orbax-checkpoint==0.11.1",
@@ -16,7 +16,7 @@ name = "earl"
 version = "0.0.0"
 description = "Reinforcement learning with Equinox."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Gary Miguel", email = "garymm@garymm.org" }]
 classifiers = [
@@ -30,6 +30,16 @@ classifiers = [
 keywords = ["Equinox", "JAX", "Reinforcement Learning"]
 
 [project.optional-dependencies]
+agent-r2d2 = [
+    "chex>=0.1.88",
+    "distrax>=0.1.5",
+    "envpool>=0.8.4",
+    "jax-loop-utils[audio-video]>=0.0.14",
+    "optax>=0.2.4",
+    "numpy<2.0.0",                         # https://github.com/sail-sg/envpool/issues/321
+    "tensorboard>=2.15.0",
+    "torch>=2.0.0",
+]
 cuda = ["jax[cuda12]>=0.4.0", "nvtx>=0.2.10"]
 jupyter = ["ipykernel>=6.0.0"]
 test = ["coverage>=7.0.0", "pytest>=8.0.0", "pytest-repeat==0.9.3"]
@@ -39,7 +49,7 @@ test = ["coverage>=7.0.0", "pytest>=8.0.0", "pytest-repeat==0.9.3"]
 Homepage = "http://github.com/garymm/earl"
 
 [dependency-groups]
-dev = ["basedpyright==1.26.0", "ruff>=0.9.1"]
+dev = ["basedpyright==1.28.0", "ruff>=0.9.1"]
 
 [build-system]
 requires = ["hatchling"]
@@ -50,6 +60,18 @@ exclude = ["test_*.py", "BUILD.bazel"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["earl"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # Please only ignore warnings that come from a transitive dependency that we
+    # can't easily avoid.
+    # See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#controlling-warnings
+    # action:message:category:module:line
+    "error",
+    "ignore:jax.interpreters.xla.pytype_aval_mappings is deprecated.:DeprecationWarning",
+    # triggered by envpool
+    "ignore:Shape is deprecated; use StableHLO instead.:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100
@@ -65,11 +87,23 @@ select = [
     "SIM", # flake8-simplify
     "UP",  # pyupgrade
 ]
+[tool.uv]
+# restrict to platforms we care about so that version resolution is faster and more likely to succeed
+# (e.g. don't fail if a package isn't built for windows)
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version>='3.11'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.uv.sources]
+# we only need torch for the tensorboard writer
+torch = { index = "pytorch-cpu" }
 draccus = { git = "https://github.com/dlwh/draccus", rev = "9b690730ca108930519f48cc5dead72a72fd27cb" }
 gymnax = { git = "https://github.com/Astera-org/gymnax", rev = "c52a7dac7b41514297d2e98b1b288d56715a5165" }
-jax_loop_utils = { git = "https://github.com/Astera-org/jax_loop_utils", rev = "5cd50bfa0a6e42ccc7438fb556d80e1ec3074932" }
 
 [tool.basedpyright]
 include = ["earl"]

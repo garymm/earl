@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from earl.utils.sharding import shard_along_axis_0
+from earl.utils.sharding import pytree_get_index_0, shard_along_axis_0
 
 
 def test_shard_along_axis_0_correct_shape_and_contents():
@@ -40,3 +40,8 @@ def test_shard_along_axis_0_not_divisible_raises_error():
   arr = jnp.arange((n_devices * 4) + 1)  # intentionally off by one
   with pytest.raises(ValueError):
     shard_along_axis_0(arr, devices)
+
+
+def test_pytree_get_index_0():
+  pytree = {"a": jnp.arange(4), "b": {"c": jnp.arange(4)}, "scalar": jnp.array(1)}
+  assert pytree_get_index_0(pytree) == {"a": 0, "b": {"c": 0}, "scalar": jnp.array(1)}

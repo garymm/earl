@@ -10,7 +10,8 @@ from earl.agents.simple_policy_gradient.simple_policy_gradient import (
   make_networks,
 )
 from earl.core import env_info_from_gymnax
-from earl.environment_loop.gymnax_loop import GymnaxLoop, MetricKey
+from earl.environment_loop.gymnax_loop import GymnaxLoop
+from earl.metric_key import MetricKey
 
 
 def test_learns_cart_pole():

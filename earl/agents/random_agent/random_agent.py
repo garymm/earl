@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.core import ActionAndState, Agent, EnvStep, Metrics
+from earl.core import ActionAndState, Agent, EnvStep
 from earl.core import AgentState as CoreAgentState
 
 
@@ -30,7 +30,6 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
 
   _sample_action_space: Callable
   _num_off_policy_updates: int
-  _opt_count_metric_key: str = "opt_count"
 
   def _new_actor_state(self, nets: None, key: PRNGKeyArray) -> ActorState:
     return ActorState(key, jnp.zeros((1,), dtype=jnp.uint32))
@@ -53,10 +52,8 @@ class RandomAgent(Agent[None, OptState, None, ActorState]):
   def _partition_for_grad(self, nets: None) -> tuple[None, None]:
     return None, nets
 
-  def _loss(
-    self, nets: None, opt_state: OptState, experience_state: None
-  ) -> tuple[Scalar, Metrics]:
-    return jnp.array(0.0), {self._opt_count_metric_key: opt_state.opt_count}
+  def _loss(self, nets: None, opt_state: OptState, experience_state: None) -> tuple[Scalar, None]:
+    return jnp.array(0.0), None
 
   def _optimize_from_grads(
     self, nets: None, opt_state: OptState, nets_grads: PyTree

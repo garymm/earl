@@ -35,6 +35,11 @@ except ImportError:
     yield
 
 
+try:
+  import envpool.python.envpool as envpool
+except ImportError:
+  envpool = None
+
 from earl.core import (
   Agent,
   AgentState,
@@ -66,6 +71,13 @@ from earl.utils.eqx_filter import filter_scan
 _logger = logging.getLogger(__name__)
 
 
+def _some_array_leaf(x: PyTree) -> jax.Array:
+  leaves = jax.tree.leaves(x, is_leaf=eqx.is_array)
+  assert leaves
+  assert isinstance(leaves[0], jax.Array)
+  return leaves[0]
+
+
 class _ActorExperience(typing.NamedTuple, typing.Generic[_ActorState]):
   actor_state_pre: _ActorState
   cycle_result: CycleResult
@@ -80,29 +92,19 @@ def _stack_leaves(pytree_list: list[PyTree]) -> PyTree:
   return pytree
 
 
-@eqx.filter_jit
-def _copy_pytree(pytree: PyTree) -> PyTree:
-  return jax.tree.map(lambda x: x.copy(), pytree)
-
-
-@eqx.filter_grad(has_aux=True)
+@eqx.filter_value_and_grad(has_aux=True)
 def _loss_for_cycle_grad(
   nets_yes_grad,
   nets_no_grad,
   opt_state,
-  experience_state,
-  agent: Agent,
-  check_metrics: typing.Callable[[Mapping], None],
-) -> tuple[Scalar, ArrayMetrics]:
+  experience_state: _ExperienceState,
+  agent: Agent[_Networks, _OptState, _ExperienceState, _ActorState],
+) -> tuple[Scalar, _ExperienceState]:
   # this is a free function so we don't have to pass self as first arg, since filter_grad
   # takes gradient with respect to the first arg.
   nets = eqx.combine(nets_yes_grad, nets_no_grad)
-  loss, metrics = agent.loss(nets, opt_state, experience_state)
-  check_metrics(metrics)
-  # inside jit, return values are guaranteed to be arrays
-  mutable_metrics: ArrayMetrics = typing.cast(ArrayMetrics, dict(metrics))
-  mutable_metrics[MetricKey.LOSS] = loss
-  return loss, mutable_metrics
+  loss, experience_state = agent.loss(nets, opt_state, experience_state)
+  return loss, experience_state
 
 
 def _filter_device_put(x: PyTree[typing.Any], device: jax.Device | None):
@@ -131,7 +133,7 @@ class _ActorThread(threading.Thread):
   def __init__(
     self,
     loop: "GymnasiumLoop",
-    env: VectorEnv,
+    env: VectorEnv | GymnasiumEnv,
     actor_state: typing.Any,
     env_step: EnvStep,
     num_steps: int,
@@ -156,8 +158,10 @@ class _ActorThread(threading.Thread):
     super().__init__()
     self._loop = loop
     self._env = env
+    # if _filter_device_put doesn't copy, then we need to copy the actor state
+    # because the actor state will be donated in each actor thread.
     if (
-      learner_devices == [device]
+      _some_array_leaf(actor_state).device == device
       or learner_devices[0].platform == "cpu"
       and device.platform == "cpu"
     ):
@@ -178,9 +182,9 @@ class _ActorThread(threading.Thread):
       if nets is self.STOP_SIGNAL:
         _logger.debug("stopping actor on device %s", self._device)
         break
-      self._actor_state = self._loop._agent.prepare_for_actor_cycle(self._actor_state)
-      actor_state_pre = copy.deepcopy(self._actor_state)
       with jax.default_device(self._device):
+        self._actor_state = self._loop._agent.prepare_for_actor_cycle(self._actor_state)
+        actor_state_pre = copy.deepcopy(self._actor_state)
         cycle_result = self._loop._actor_cycle(
           self._env, self._actor_state, nets, self._env_step, self._num_steps, self._key
         )
@@ -244,6 +248,28 @@ def _jax_platform_cpu():
       os.environ["JAX_PLATFORMS"] = prev_value
 
 
+def _make_vec_env(
+  vectorization_mode: typing.Literal["sync", "async", "none"],
+  env_factory: typing.Callable[[], GymnasiumEnv],
+  num_envs: int,
+) -> GymnasiumEnv | VectorEnv:
+  if vectorization_mode == "none":
+    env = env_factory()
+    if (
+      envpool is not None and isinstance(env, envpool.EnvPoolMixin) and len(env) != num_envs  # pyright: ignore[reportArgumentType]
+    ):
+      raise ValueError("envpool env must have the same number of environments as num_envs")
+    return env
+  if vectorization_mode == "sync":
+    return SyncVectorEnv([lambda: Autoreset(env_factory()) for _ in range(num_envs)])
+  assert vectorization_mode == "async"
+  # context="spawn" because others are unsafe with multithreaded JAX
+  with _jax_platform_cpu():
+    return AsyncVectorEnv(
+      [lambda: Autoreset(env_factory()) for _ in range(num_envs)], context="spawn"
+    )
+
+
 class GymnasiumLoop:
   """Runs an Agent in a Gymnasium environment.
 
@@ -261,7 +287,7 @@ class GymnasiumLoop:
 
   def __init__(
     self,
-    env: GymnasiumEnv,
+    env_factory: typing.Callable[[], GymnasiumEnv],
     agent: Agent,
     num_envs: int,
     key: PRNGKeyArray,
@@ -269,14 +295,14 @@ class GymnasiumLoop:
     observe_cycle: ObserveCycle = no_op_observe_cycle,
     actor_only: bool = False,
     assert_no_recompile: bool = True,
-    vectorization_mode: typing.Literal["sync", "async"] = "async",
+    vectorization_mode: typing.Literal["sync", "async", "none"] = "async",
     actor_devices: typing.Sequence[jax.Device] | None = None,
     learner_devices: typing.Sequence[jax.Device] | None = None,
   ):
     """Initializes the GymnasiumLoop.
 
     Args:
-        env: The environment.
+        env_factory: A function that returns a GymnasiumEnv.
         agent: The agent.
         num_envs: The number of environments to run in parallel per actor.
           Note there will be 2 actor threads per actor device, so the total number of
@@ -289,7 +315,8 @@ class GymnasiumLoop:
         actor_only: If True, agent.optimize_from_grads() will not be called.
         assert_no_recompile: Whether to fail if the inner loop gets compiled more than once.
         vectorization_mode: Whether to create a synchronous or asynchronous vectorized environment
-            from the provided Gymnasium environment.
+            from the provided Gymnasium environment. If "none", the env_factory must return a
+            a vectorized environment with num_envs.
         actor_devices: The devices to use for acting. If None, uses jax.local_devices()[0].
         learner_devices: The devices to use for learning. If None, uses jax.local_devices()[0].
     """
@@ -305,26 +332,14 @@ class GymnasiumLoop:
     self._networks_for_actor_lock = threading.Lock()
     self._actor_threads: list[_ActorThread] = []
 
-    env = Autoreset(env)  # run() assumes autoreset.
-
-    def _env_factory() -> GymnasiumEnv:
-      return copy.deepcopy(env)
-
-    self._env_for_actor_thread: list[VectorEnv] = []
+    self._env_for_actor_thread: list[GymnasiumEnv | VectorEnv] = []
     for _ in range(self._NUM_ACTOR_THREADS * len(self._actor_devices)):
-      if vectorization_mode == "sync":
-        self._env_for_actor_thread.append(SyncVectorEnv([_env_factory for _ in range(num_envs)]))
-      else:
-        assert vectorization_mode == "async"
-        # context="spawn" because others are unsafe with multithreaded JAX
-        with _jax_platform_cpu():
-          self._env_for_actor_thread.append(
-            AsyncVectorEnv([_env_factory for _ in range(num_envs)], context="spawn")
-          )
+      self._env_for_actor_thread.append(_make_vec_env(vectorization_mode, env_factory, num_envs))
 
     sample_key, key = jax.random.split(key)
     sample_key = jax.random.split(sample_key, num_envs)
-    env_info = env_info_from_gymnasium(env, num_envs)
+    env_0 = self._env_for_actor_thread[0]
+    env_info = env_info_from_gymnasium(env_0, num_envs)
     self._action_space = env_info.action_space
     self._example_action = jax.vmap(self._action_space.sample)(sample_key)
     self._agent = agent
@@ -464,11 +479,6 @@ class GymnasiumLoop:
         except queue.Empty:
           break
 
-      agent_state = dataclasses.replace(
-        agent_state,
-        # Not ideal. See comment above where we pass actor state to the actor thread.
-        actor=pytree_get_index_0(actor_experiences[-1].cycle_result.agent_state),
-      )
       cycle_result = actor_experiences[-1].cycle_result
       if self._actor_only:
         learn_duration = 0
@@ -477,9 +487,9 @@ class GymnasiumLoop:
           actor_experience = actor_experiences.pop()
           experience_state = self._agent_update_experience(
             agent_state.experience,
-            actor_experience.cycle_result.trajectory,
             actor_experience.actor_state_pre,
             actor_experience.cycle_result.agent_state,
+            actor_experience.cycle_result.trajectory,
           )
           agent_state = dataclasses.replace(agent_state, experience=experience_state)
         del actor_experiences
@@ -501,7 +511,9 @@ class GymnasiumLoop:
           )
         with self._networks_for_actor_lock:
           for device in self._networks_for_actor_device:
-            self._networks_for_actor_device[device] = _filter_device_put(agent_state.nets, device)
+            self._networks_for_actor_device[device] = _filter_device_put(
+              pytree_get_index_0(agent_state.nets), device
+            )
 
       step_infos_device_0 = pytree_get_index_0(cycle_result.step_infos)
       trajectory_device_0 = pytree_get_index_0(cycle_result.trajectory)
@@ -524,6 +536,11 @@ class GymnasiumLoop:
 
     self._stop_actor_threads()
     env_steps = [at._env_step for at in self._actor_threads]
+    agent_state = dataclasses.replace(
+      agent_state,
+      # Not ideal. See comment above where we pass actor state to the actor thread.
+      actor=self._actor_threads[-1]._actor_state,
+    )
     return Result(
       agent_state,
       None,
@@ -536,14 +553,14 @@ class GymnasiumLoop:
   ) -> tuple[tuple[_Networks, _OptState, _ExperienceState], ArrayMetrics]:
     nets, opt_state, experience_state = states
     nets_yes_grad, nets_no_grad = self._agent.partition_for_grad(nets)
-    grad, metrics = _loss_for_cycle_grad(
+    (loss, experience_state), grad = _loss_for_cycle_grad(
       nets_yes_grad,
       nets_no_grad,
       opt_state,
       experience_state,
       self._agent,
-      self._raise_if_metric_conflicts,
     )
+    metrics: ArrayMetrics = {MetricKey.LOSS: loss}
     grad = jax.lax.pmean(grad, axis_name=self._PMAP_AXIS_NAME)
     grad_means = pytree_leaf_means(grad, "grad_mean")
     metrics.update(grad_means)
@@ -571,7 +588,7 @@ class GymnasiumLoop:
 
   def _actor_cycle(
     self,
-    env: VectorEnv,
+    env: VectorEnv | GymnasiumEnv,
     actor_state: typing.Any,
     nets: typing.Any,
     env_step: EnvStep,
@@ -591,7 +608,11 @@ class GymnasiumLoop:
 
         with nvtx_annotate("env.step"):
           obs, reward, done, trunc, info = env.step(np.array(action_and_state.action))
-        env_step = EnvStep(done | trunc, obs, action_and_state.action, reward)
+        # the type ignore is needed because the type returned by a regular GymnasiumEnv
+        # is a scalar, but we actually will have either a vector env or an envpool env.
+        # envpool envs are subclasses of GymnasiumEnv, but don't respect its annotated
+        # return types :-(.
+        env_step = EnvStep(done | trunc, obs, action_and_state.action, reward)  # pyright: ignore[reportArgumentType]
 
         trajectory.append(env_step)
         step_infos.append(info)
@@ -686,12 +707,10 @@ class GymnasiumLoop:
     """Replicates the agent state for distributed training."""
     # Don't require the caller to replicate the agent state.
     actor_state = agent_state.actor
-    agent_state_leaves = jax.tree.leaves(
-      dataclasses.replace(agent_state, actor=None), is_leaf=eqx.is_array
-    )
-    assert agent_state_leaves
-    assert isinstance(agent_state_leaves[0], jax.Array)
-    if isinstance(agent_state_leaves[0].sharding, jax.sharding.SingleDeviceSharding):
+    agent_state = dataclasses.replace(agent_state, actor=None)
+    agent_state_leaf = _some_array_leaf(agent_state)
+
+    if isinstance(agent_state_leaf.sharding, jax.sharding.SingleDeviceSharding):
       agent_state_arrays, agent_state_static = eqx.partition(agent_state, eqx.is_array)
       agent_state_arrays = jax.device_put_replicated(agent_state_arrays, self._learner_devices)
       agent_state = eqx.combine(agent_state_arrays, agent_state_static)

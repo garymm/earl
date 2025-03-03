@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import PRNGKeyArray, PyTree, Scalar
 
-from earl.core import ActionAndState, Agent, EnvStep, Metrics
+from earl.core import ActionAndState, Agent, EnvStep
 from earl.core import AgentState as CoreAgentState
 from earl.utils.sharding import shard_along_axis_0
 
@@ -127,7 +127,7 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceSt
 
   def _loss(
     self, nets: eqx.nn.Sequential, opt_state: optax.OptState, experience_state: ExperienceState
-  ) -> tuple[Scalar, Metrics]:
+  ) -> tuple[Scalar, ExperienceState]:
     def discounted_returns(carry, x):
       carry = x + self.config.discount * carry
       return carry, carry
@@ -138,7 +138,7 @@ class SimplePolicyGradient(Agent[eqx.nn.Sequential, optax.OptState, ExperienceSt
       return ys
 
     returns = vmap_discounted_returns(experience_state.rewards)
-    return -jnp.mean(returns * experience_state.chosen_action_log_probs), {}
+    return -jnp.mean(returns * experience_state.chosen_action_log_probs), experience_state
 
   def num_off_policy_optims_per_cycle(self) -> int:
     return 0

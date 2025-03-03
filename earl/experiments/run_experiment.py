@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import pathlib
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -160,7 +161,7 @@ def _new_checkpoint_manager(
 
 
 def _new_gymnasium_loop(
-  env: GymnasiumEnv,
+  env_factory: Callable[[], GymnasiumEnv],
   env_params: Any,
   agent: Agent,
   num_envs: int,
@@ -173,7 +174,7 @@ def _new_gymnasium_loop(
   learner_devices: list[jax.Device] | None = None,
 ) -> GymnasiumLoop:
   return GymnasiumLoop(
-    env,
+    env_factory,
     agent,
     num_envs,
     key,
@@ -248,13 +249,13 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
       num_envs = int(num_envs)
 
   if isinstance(env, GymnasiumEnv):
-    loop_factory = _new_gymnasium_loop
+    loop_factory = functools.partial(_new_gymnasium_loop, config.new_env)  # pyright: ignore[reportArgumentType]
+    env.close()
   else:
     assert isinstance(env, gymnax.environments.environment.Environment)
-    loop_factory = _new_gymnax_loop
+    loop_factory = functools.partial(_new_gymnax_loop, env)  # pyright: ignore[reportArgumentType]
 
   train_loop: GymnasiumLoop | GymnaxLoop = loop_factory(
-    env,  # pyright: ignore[reportArgumentType]
     env_params,
     agent,
     config.num_envs,
@@ -300,7 +301,6 @@ def run_experiment(config: ExperimentConfig) -> LoopResult:
     train_cycles_per_eval = config.num_train_cycles // config.num_eval_cycles
     eval_key, key = jax.random.split(key)
     eval_loop = loop_factory(
-      env,  # pyright: ignore[reportArgumentType]
       env_params,
       agent,
       config.num_envs,
