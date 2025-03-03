@@ -24,5 +24,6 @@
     "bazel.buildifierExecutable": "@buildifier_prebuilt//:buildifier",
     "python.testing.pytestArgs": [
         "earl"
-    ]
+    ],
+    "git.ignoreLimitWarning": true
 }
