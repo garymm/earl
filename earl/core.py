@@ -93,9 +93,9 @@ class AgentState(eqx.Module, Generic[_Networks, _OptState, _ExperienceState, _Ac
 
   Can be optax.OptState if that's all you need, or you can set it to a custom class."""
   experience: _ExperienceState
-  """Experience state accumulated from the actor and sent to the learner.
+  """State based on trajectories accumulated by actors and sent learners.
 
-  For agents that use experience replay, this replay buffers.
+  For agents that use experience replay, this contains replay buffers.
   """
 
 

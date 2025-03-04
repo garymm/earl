@@ -1,10 +1,10 @@
-# Earl: a framework for reinforcement learning research code
+# Earl: a framework for scalable reinforcement learning research
 
 Earl is a library of reinforcement learning (RL) building blocks that strives to makes it easy to build simple, efficient, and readable agents.
 
 Earl is built on [JAX](https://docs.jax.dev/en/latest/) and [Equinox](https://docs.kidger.site/equinox/).
 
-Earl implements the two architectures described in ["Podracer architectures for scalable Reinforcement Learning"](https://arxiv.org/abs/2104.06272), which were used at DeepMind to scale training to very large batch sizes across many chips. This repository includes a few agents (AKA RL algorithms), notably R2D2 as described in “Recurrent Experience Replay In Distributed Reinforcement Learning”.
+Earl implements the two architectures described in ["Podracer architectures for scalable Reinforcement Learning"](https://arxiv.org/abs/2104.06272), which were used at DeepMind to scale training to very large batch sizes across many chips. This repository includes a few agents (AKA RL algorithms), notably R2D2 as described in "Recurrent Experience Replay In Distributed Reinforcement Learning".
 
 The most important parts of Earl are:
 
@@ -26,6 +26,7 @@ There is currently no package on PyPi, but Earl is pure Python, so it can be ins
 uv pip install "earl @ git+https://github.com/garymm/earl.git"
 ```
 
+[Here's a blog post](https://www.garymm.org/blog/2025/03/03/earl/) that discusses some of the rationale and lessons learned developing Earl.
 
 ## Development
 
@@ -69,3 +70,19 @@ bazel run //:dot_venv_linux_x86_64
 ```
 
 This will create a `.venv` directory with the dependencies so you can use it with your IDE.
+
+## Citation
+
+If you use Earl in your research, please cite it:
+
+```bibtex
+@software{miguel2024earl,
+  author = {Miguel, Gary},
+  title = {Earl: A Framework for Scalable Reinforcement Learning Research},
+  year = {2025},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  url = {https://github.com/garymm/earl},
+  description = {A library of reinforcement learning (RL) building blocks that strives to makes it easy to build simple, efficient, and readable agents}
+}
+```
